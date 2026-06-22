@@ -1,0 +1,16 @@
+# Firmware builder — run on your x86 PC, on demand. This is SEPARATE from the
+# Portainer stack (docker-compose.yml) so it never touches the server deploy.
+#
+#   docker compose -f docker-compose.build.yml run --rm firmware-builder
+#
+# Outputs: firmware/dist/{firmware.bin,version} (OTA) and
+#          webflash/{firmware-merged.bin,manifest.json} (web-flasher).
+# Then push to the server:  firmware/push.sh http://<NAS>:8090 [token]
+services:
+  firmware-builder:
+    build: ./firmware
+    image: epaper-firmware-builder:latest
+    volumes:
+      - ./firmware:/work       # PlatformIO project (source + .pio cache)
+      - ./firmware/dist:/out   # OTA artifacts (firmware.bin, version)
+      - ./webflash:/web        # web-flash artifacts (firmware-merged.bin, manifest.json)

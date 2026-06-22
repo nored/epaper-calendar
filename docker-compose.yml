@@ -8,33 +8,15 @@ services:
     container_name: epaper-calendar
     restart: unless-stopped
     ports:
-      # host:container — left = OMV host port (browse here), right = fixed in-container.
-      # 8090 avoids OMV's UI (80/443) and Portainer (9000/9443). Change the LEFT
-      # number only if 8090 is taken. Reach the control panel at http://<OMV-IP>:8090
+      # host:container — reach the control panel at http://<OMV-IP>:8090
       - "8090:3000"
     environment:
       # The server computes "refresh at local midnight" and stamps German dates,
       # so it must know the timezone. Containers default to UTC otherwise.
       - TZ=Europe/Berlin
-      # Optional: require this token on firmware uploads (POST /api/firmware).
-      # Set it in Portainer's stack env to lock down OTA pushes. Unset = open (LAN).
-      - EPAPER_FW_TOKEN=${EPAPER_FW_TOKEN:-}
     volumes:
-      # Persists config.json + cache/ + status.json + firmware releases across rebuilds.
+      # Persists config.json + cache/ + status.json across rebuilds/restarts.
       - epaper-data:/app/data
-
-  # On-demand firmware builder (NOT started by `up`; it's behind a profile).
-  # Build the device firmware on your PC (x86, fast) — no PlatformIO install:
-  #   docker compose --profile build run --rm firmware-builder
-  # Outputs to firmware/dist/, then: firmware/push.sh http://<NAS>:8090 [token]
-  firmware-builder:
-    profiles: ["build"]
-    build: ./firmware
-    image: epaper-firmware-builder:latest
-    volumes:
-      - ./firmware:/work       # PlatformIO project (source + .pio cache)
-      - ./firmware/dist:/out   # OTA artifacts (firmware.bin, version)
-      - ./webflash:/web        # web-flash artifacts (firmware-merged.bin, manifest.json)
 
 volumes:
   epaper-data:
