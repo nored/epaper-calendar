@@ -1,0 +1,22 @@
+# Portainer Stack for the e-paper calendar server.
+# In Portainer: Stacks -> Add stack -> Repository, point "Compose path" at this
+# file. Portainer builds the image from server/Dockerfile and runs it.
+services:
+  epaper-calendar:
+    build: ./server
+    image: epaper-calendar:latest
+    container_name: epaper-calendar
+    restart: unless-stopped
+    ports:
+      # host:container — reach the control panel at http://<OMV-IP>:3000
+      - "3000:3000"
+    environment:
+      # The server computes "refresh at local midnight" and stamps German dates,
+      # so it must know the timezone. Containers default to UTC otherwise.
+      - TZ=Europe/Berlin
+    volumes:
+      # Persists config.json + cache/ + status.json across rebuilds/restarts.
+      - epaper-data:/app/data
+
+volumes:
+  epaper-data:

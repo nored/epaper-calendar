@@ -1,0 +1,9 @@
+node_modules/
+# Runtime state + dev scratch — the container creates a fresh data/ on a volume.
+server/data/
+firmware/.pio/
+firmware/src/config.h
+.DS_Store
+
+# Vendored Waveshare reference clone (has its own .git) — kept locally only.
+reference-code-repo/

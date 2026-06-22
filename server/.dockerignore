@@ -1,0 +1,11 @@
+# Don't copy the dev machine's installed modules — they're rebuilt inside the
+# container for its own OS/CPU. Copying them in would ship the wrong native binary.
+node_modules
+
+# Runtime state belongs in the mounted volume, not in the image. This also keeps
+# the dev scratch PNGs in data/ out of the build.
+data
+
+# Misc
+npm-debug.log
+.DS_Store

@@ -1,0 +1,9 @@
+// Copy this file to config.h and fill in your values. config.h is gitignored.
+#pragma once
+
+#define WIFI_SSID  "your-wifi"
+#define WIFI_PASS  "your-password"
+
+// The server's frame endpoint (the box you run `npm start` on, in the LAN).
+// Use the LAN IP or an mDNS name. Must be reachable over plain HTTP.
+#define SERVER_FRAME_URL "http://192.168.1.50:3000/frame.bin"

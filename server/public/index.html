@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>E-Paper Kalender – Steuerung</title>
+<style>
+  :root { --bg:#14161a; --card:#1e2128; --ink:#e7e9ee; --mut:#9aa3b0; --acc:#4f8cff; --line:#2c3038; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,sans-serif; background:#14161a; color:#e7e9ee; }
+  header { padding:16px 22px; border-bottom:1px solid #2c3038; display:flex; align-items:center; gap:14px; position:sticky; top:0; z-index:20; background:#14161a; }
+  header h1 { font-size:18px; margin:0; }
+  .badge { font-size:12px; color:#9aa3b0; }
+  main { display:grid; grid-template-columns: 460px 1fr; gap:24px; padding:24px; align-items:start; }
+  @media (max-width:980px){ main{ grid-template-columns:1fr; } }
+  .card { background:#1e2128; border:1px solid #2c3038; border-radius:12px; padding:18px; margin-bottom:20px; }
+  .card h2 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:#9aa3b0; margin:0 0 14px; }
+  label { display:block; font-size:13px; color:#9aa3b0; margin:10px 0 4px; }
+  input,select,textarea { width:100%; padding:8px 10px; background:#14161a; border:1px solid #2c3038; border-radius:8px; color:#e7e9ee; font:inherit; }
+  textarea { resize:vertical; min-height:60px; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  button { cursor:pointer; border:0; border-radius:8px; padding:9px 14px; font:inherit; font-weight:600; }
+  .primary { background:#4f8cff; color:#fff; } .ghost { background:#2c3038; color:#e7e9ee; }
+  .danger { background:#3a2226; color:#ff8a8a; }
+  .feed { border:1px solid #2c3038; border-radius:10px; padding:12px; margin-bottom:12px; }
+  .feed .top { display:flex; gap:8px; align-items:center; }
+  .preview { position:sticky; top:24px; }
+  .preview img { width:100%; border-radius:10px; border:1px solid #2c3038; background:#fff; }
+  .toggles { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .toggles label { display:flex; align-items:center; gap:8px; margin:4px 0; color:#e7e9ee; }
+  .toggles input { width:auto; }
+  .status { font-size:13px; color:#9aa3b0; }
+  .status b { color:#e7e9ee; }
+  .hint { font-size:12px; color:#9aa3b0; margin-top:4px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; background:#2c3038; }
+  .swatch { width:18px;height:18px;border-radius:4px;border:1px solid #444; display:inline-block; vertical-align:middle;}
+</style>
+</head>
+<body>
+<div id="toast" style="position:fixed;bottom:18px;right:18px;background:#1e2128;border:1px solid #2c3038;color:#e7e9ee;padding:10px 16px;border-radius:10px;opacity:0;transition:opacity .3s;z-index:50;font-weight:600">…</div>
+
+<main>
+  <div>
+    <div class="card">
+      <h2>Feeds (ICS)</h2>
+      <div id="feeds"></div>
+      <button class="ghost" onclick="addFeed()">+ Feed</button>
+      <p class="hint">Jeder Feed bekommt Farbe, Markierungsform und Beschriftung. Regeln ordnen einzelne Stichworte im Titel (z.B. „rest", „papier") eigene Farben/Beschriftungen zu — ideal für Abfuhrkalender.</p>
+    </div>
+
+    <div class="card">
+      <h2>Wetter-Orte (bis zu 3)</h2>
+      <div id="locations"></div>
+      <button class="ghost" id="addLocBtn" onclick="addLocation()">+ Ort</button>
+      <p class="hint">Ortsname eingeben (z.B. „Jüterbog" oder „Berlin"). Wird automatisch geolokalisiert.</p>
+    </div>
+
+    <div class="card">
+      <h2>Sprüche des Tages</h2>
+      <textarea id="quotes" rows="4" style="width:100%;box-sizing:border-box" placeholder="Leer lassen = automatisch aus dem Internet" oninput="cfg.quotes=this.value.split('\n').map(s=>s.trim()).filter(Boolean)"></textarea>
+      <p class="hint"><b>Leer lassen</b> = täglich automatisch ein Spruch aus dem Internet (du musst nichts schreiben). Optional eigene Sprüche, einer pro Zeile.</p>
+    </div>
+
+    <div class="card">
+      <h2>Anzeige</h2>
+      <div class="toggles" id="toggles"></div>
+      <div style="margin-top:14px">
+        <label>Graustufe inaktiver Monate: <b id="shadeVal"></b></label>
+        <input type="range" min="0" max="0.4" step="0.02" id="monthShade" style="width:100%;margin-top:4px"
+          oninput="cfg.inactiveMonthShade=parseFloat(this.value);document.getElementById('shadeVal').textContent=Math.round(this.value*100)+'%'" onchange="autosave()">
+      </div>
+      <div style="margin-top:14px">
+        <label>Graustufe Wetter-Kreise: <b id="wshadeVal"></b></label>
+        <input type="range" min="0" max="0.8" step="0.02" id="weatherShade" style="width:100%;margin-top:4px"
+          oninput="cfg.weatherCircleShade=parseFloat(this.value);document.getElementById('wshadeVal').textContent=Math.round(this.value*100)+'%'" onchange="autosave()">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Einstellungen</h2>
+      <label>Land</label><input id="country">
+      <label>Bundesländer (Feiertage — auch mehrere)</label>
+      <div id="statesBox" class="toggles" style="grid-template-columns:1fr 1fr"></div>
+      <label style="display:flex;gap:8px;align-items:center;color:#e7e9ee;margin-top:10px"><input type="checkbox" id="freeSaturday" style="width:auto"> Samstag ist frei (rot markieren)</label>
+      <label style="display:flex;gap:8px;align-items:center;color:#e7e9ee;margin-top:6px"><input type="checkbox" id="showOtherStateHolidays" style="width:auto"> Feiertage anderer Bundesländer zeigen (s/w)</label>
+      <div class="row">
+        <div><label>Ausrichtung</label>
+          <select id="rotate"><option value="0">Normal (Kabel unten)</option><option value="180">Gedreht (Kabel oben)</option></select></div>
+        <div><label>Demnächst: Tage</label><input id="upcomingDays" type="number" min="1" max="60"></div>
+      </div>
+      <label>Steuerungs-URL (für QR-Code, leer = automatisch)</label>
+      <input id="controlUrl" placeholder="http://epaper-cal.local/">
+    </div>
+
+    <div class="card">
+      <h2>Gerät</h2>
+      <div class="status" id="deviceStatus">noch kein Kontakt</div>
+    </div>
+  </div>
+
+  <div class="preview">
+    <div class="card">
+      <img id="preview" src="/preview.png" alt="Vorschau">
+    </div>
+  </div>
+</main>
+
+<script>
+const COLORS = ["black","red","blue","green","yellow"];
+let cfg = null;
+
+function swatch(c){ const m={black:"#000",red:"#c80000",blue:"#0046c8",green:"#00823c",yellow:"#ffe900"}; return m[c]||"#000"; }
+
+async function load(){
+  cfg = await (await fetch("/api/config")).json();
+  document.getElementById("country").value = cfg.country||"DE";
+  renderStates();
+  document.getElementById("freeSaturday").checked = !!cfg.freeSaturday;
+  document.getElementById("showOtherStateHolidays").checked = !!cfg.showOtherStateHolidays;
+  document.getElementById("upcomingDays").value = cfg.upcomingDays ?? 7;
+  document.getElementById("rotate").value = String(cfg.rotate||0);
+  document.getElementById("controlUrl").value = cfg.controlUrl||"";
+  renderFeeds(); renderLocations(); renderQuotes(); renderShades(); renderToggles(); loadStatus();
+}
+
+function renderLocations(){
+  const el=document.getElementById("locations"); el.innerHTML="";
+  cfg.locations=cfg.locations||[];
+  cfg.locations.forEach((loc,i)=>{
+    const d=document.createElement("div"); d.className="row"; d.style.marginBottom="8px";
+    d.innerHTML=`<input value="${loc.name||''}" placeholder="Ortsname" oninput="cfg.locations[${i}]={name:this.value}">
+      <button class="danger" style="flex:0 0 auto" onclick="cfg.locations.splice(${i},1);renderLocations();autosave()">✕</button>`;
+    el.appendChild(d);
+  });
+  const btn=document.getElementById("addLocBtn"); if(btn) btn.style.display = cfg.locations.length>=3 ? "none" : "";
+}
+function addLocation(){ cfg.locations=cfg.locations||[]; if(cfg.locations.length>=3)return; cfg.locations.push({name:""}); renderLocations(); autosave(); }
+
+const ZODIAC = [["aries","Widder"],["taurus","Stier"],["gemini","Zwillinge"],["cancer","Krebs"],["leo","Löwe"],["virgo","Jungfrau"],["libra","Waage"],["scorpio","Skorpion"],["sagittarius","Schütze"],["capricorn","Steinbock"],["aquarius","Wassermann"],["pisces","Fische"]];
+function renderHoroscopes(){
+  const el=document.getElementById("horoscopes"); if(!el) return; el.innerHTML="";
+  cfg.horoscopes=cfg.horoscopes||[];
+  cfg.horoscopes.forEach((ho,i)=>{
+    const d=document.createElement("div"); d.className="row"; d.style.marginBottom="8px";
+    const opts=ZODIAC.map(([k,de])=>`<option value="${k}" ${ho.sign===k?"selected":""}>${de}</option>`).join("");
+    d.innerHTML=`<select style="flex:1" onchange="cfg.horoscopes[${i}].sign=this.value;autosave()"><option value="">Sternzeichen…</option>${opts}</select>
+      <button class="danger" style="flex:0 0 auto" onclick="cfg.horoscopes.splice(${i},1);renderHoroscopes();autosave()">✕</button>`;
+    el.appendChild(d);
+  });
+  const btn=document.getElementById("addHoroBtn"); if(btn) btn.style.display = cfg.horoscopes.length>=3 ? "none" : "";
+}
+function addHoroscope(){ cfg.horoscopes=cfg.horoscopes||[]; if(cfg.horoscopes.length>=3)return; cfg.horoscopes.push({sign:"",label:""}); renderHoroscopes(); autosave(); }
+
+function renderQuotes(){ const el=document.getElementById("quotes"); if(el) el.value=(cfg.quotes||[]).join("\n"); }
+
+function renderShades(){
+  const m=cfg.inactiveMonthShade??0.12, w=cfg.weatherCircleShade??0.12;
+  const ms=document.getElementById("monthShade"), mv=document.getElementById("shadeVal");
+  if(ms) ms.value=m; if(mv) mv.textContent=Math.round(m*100)+"%";
+  const ws=document.getElementById("weatherShade"), wv=document.getElementById("wshadeVal");
+  if(ws) ws.value=w; if(wv) wv.textContent=Math.round(w*100)+"%";
+}
+
+const MARKERS = ["dot","square","bar"];
+function colorOpts(sel){ return COLORS.map(c=>`<option value="${c}" ${sel===c?'selected':''}>${c}</option>`).join(''); }
+function markerOpts(sel){ return MARKERS.map(m=>`<option value="${m}" ${sel===m?'selected':''}>${m}</option>`).join(''); }
+
+function renderFeeds(){
+  const el = document.getElementById("feeds"); el.innerHTML="";
+  (cfg.feeds||[]).forEach((f,i)=>{
+    const d = document.createElement("div"); d.className="feed";
+    const rules = Array.isArray(f.rules)?f.rules:[];
+    d.innerHTML = `
+      <div class="top">
+        <input value="${esc(f.name)}" placeholder="Name" oninput="cfg.feeds[${i}].name=this.value">
+        <label style="display:flex;gap:6px;align-items:center;color:#e7e9ee;margin:0"><input type="checkbox" style="width:auto" ${f.enabled!==false?'checked':''} onchange="cfg.feeds[${i}].enabled=this.checked"> aktiv</label>
+        <button class="danger" style="flex:0 0 auto" onclick="if(confirm('Feed wirklich löschen? (Zum vorübergehenden Ausblenden besser „aktiv“ abwählen.)')){cfg.feeds.splice(${i},1);renderFeeds();autosave();}">✕</button>
+      </div>
+      <label>ICS-URL</label>
+      <input value="${esc(f.url)}" placeholder="https://…/basic.ics oder webcal://…" oninput="cfg.feeds[${i}].url=this.value">
+      <div class="row">
+        <div><label>Farbe</label>
+          <select onchange="cfg.feeds[${i}].color=this.value">${colorOpts(f.color||'blue')}</select></div>
+        <div><label>Markierung</label>
+          <select onchange="cfg.feeds[${i}].marker=this.value">${markerOpts(f.marker||'dot')}</select></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;color:#e7e9ee;margin-top:8px">
+        <input type="checkbox" style="width:auto" ${f.upcoming?'checked':''} onchange="cfg.feeds[${i}].upcoming=this.checked"> in „Demnächst" anzeigen</label>
+      <label>Regeln (Stichwort im Titel → Farbe + Beschriftung)</label>
+      <div id="rules-${i}">
+        ${rules.map((r,j)=>ruleRow(i,j,r)).join('')}
+      </div>
+      <button class="ghost" style="padding:6px 10px;font-size:13px" onclick="addRule(${i})">+ Regel</button>
+      <button class="ghost" style="padding:6px 10px;font-size:13px" onclick="scanFeed(${i})">🔍 Termine scannen</button>
+    `;
+    el.appendChild(d);
+  });
+}
+function ruleRow(i,j,r){
+  return `<div class="row" style="margin-bottom:6px">
+    <input value="${esc(r.match)}" placeholder="Stichwort (z.B. rest)" oninput="cfg.feeds[${i}].rules[${j}].match=this.value">
+    <select style="flex:0 0 90px" onchange="cfg.feeds[${i}].rules[${j}].color=this.value">${colorOpts(r.color||'black')}</select>
+    <input value="${esc(r.label)}" placeholder="Beschriftung" oninput="cfg.feeds[${i}].rules[${j}].label=this.value">
+    <button class="danger" style="flex:0 0 auto" onclick="cfg.feeds[${i}].rules.splice(${j},1);renderFeeds();autosave()">✕</button>
+  </div>`;
+}
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function addRule(i){ const f=cfg.feeds[i]; f.rules=Array.isArray(f.rules)?f.rules:[]; f.rules.push({match:"",color:"black",label:""}); renderFeeds(); autosave(); }
+async function scanFeed(i){
+  const f=cfg.feeds[i];
+  if(!f.url){ alert("Bitte zuerst die ICS-URL eintragen."); return; }
+  let titles;
+  try{ titles = await (await fetch(`/api/feed-titles?url=${encodeURIComponent(f.url)}&name=${encodeURIComponent(f.name||'')}`)).json(); }
+  catch(e){ alert("Scan fehlgeschlagen: "+e.message); return; }
+  if(!Array.isArray(titles)||!titles.length){ alert("Keine Termine gefunden. URL korrekt?"); return; }
+  f.rules=Array.isArray(f.rules)?f.rules:[];
+  let added=0;
+  for(const t of titles){
+    const already=f.rules.some(r=>r.match && t.toLowerCase().includes(String(r.match).toLowerCase()));
+    if(!already){ f.rules.push({match:t,color:f.color||'blue',marker:f.marker||'dot',label:t}); added++; }
+  }
+  renderFeeds(); autosave();
+  alert(`${titles.length} Termin-Art(en) gefunden, ${added} neu angelegt. Farben wählen — wird automatisch gespeichert.`);
+}
+function addFeed(){ cfg.feeds=cfg.feeds||[]; cfg.feeds.push({name:"Kalender",url:"",color:"blue",marker:"square",upcoming:true,enabled:true,rules:[]}); renderFeeds(); autosave(); }
+
+const BUNDESLAENDER=[["BW","Baden-Württemberg"],["BY","Bayern"],["BE","Berlin"],["BB","Brandenburg"],["HB","Bremen"],["HH","Hamburg"],["HE","Hessen"],["MV","Mecklenburg-Vorp."],["NI","Niedersachsen"],["NW","Nordrhein-Westf."],["RP","Rheinland-Pfalz"],["SL","Saarland"],["SN","Sachsen"],["ST","Sachsen-Anhalt"],["SH","Schleswig-Holst."],["TH","Thüringen"]];
+function renderStates(){
+  const sel=new Set(cfg.states||(cfg.state?[cfg.state]:["BB"]));
+  const el=document.getElementById("statesBox"); el.innerHTML="";
+  BUNDESLAENDER.forEach(([code,name])=>{
+    const l=document.createElement("label");
+    l.innerHTML=`<input type="checkbox" value="${code}" ${sel.has(code)?'checked':''} style="width:auto"> ${name}`;
+    el.appendChild(l);
+  });
+}
+
+function renderToggles(){
+  const el=document.getElementById("toggles"); el.innerHTML="";
+  const labels={nameDays:"Namenstage",moon:"Mondphasen",schoolHolidays:"Schulferien",weekNumbers:"Kalenderwochen",weather:"Wetter",quote:"Spruch des Tages",horoscope:"Horoskope"};
+  cfg.show=cfg.show||{};
+  Object.entries(labels).forEach(([k,lab])=>{
+    const l=document.createElement("label");
+    l.innerHTML=`<input type="checkbox" ${cfg.show[k]!==false?'checked':''} onchange="cfg.show['${k}']=this.checked"> ${lab}`;
+    el.appendChild(l);
+  });
+}
+
+async function loadStatus(){
+  const s = await (await fetch("/api/status")).json();
+  const b=document.getElementById("statusBadge");
+  const ds=document.getElementById("deviceStatus");
+  if(s.lastSeen){
+    const dt=new Date(s.lastSeen).toLocaleString("de-DE");
+    if(b) b.textContent=`Gerät zuletzt: ${dt}`;
+    if(ds) ds.innerHTML=`Zuletzt gesehen: <b>${dt}</b><br>Batterie: <b>${s.battery??'?'} V</b><br>Weckgrund: <b>${s.wakeReason??'?'}</b><br>Nächster Schlaf: <b>${s.lastSleepSeconds?Math.round(s.lastSleepSeconds/3600)+' h':'?'}</b><br>Updates gesamt: <b>${s.count??0}</b>`;
+  } else { if(b) b.textContent="noch kein Gerätekontakt"; }
+}
+
+async function save(){
+  cfg.country=document.getElementById("country").value;
+  cfg.states=[...document.querySelectorAll('#statesBox input:checked')].map(i=>i.value);
+  if(!cfg.states.length) cfg.states=["BB"];
+  delete cfg.state;
+  cfg.freeSaturday=document.getElementById("freeSaturday").checked;
+  cfg.showOtherStateHolidays=document.getElementById("showOtherStateHolidays").checked;
+  cfg.upcomingDays=parseInt(document.getElementById("upcomingDays").value,10)||7;
+  cfg.rotate=parseInt(document.getElementById("rotate").value,10);
+  cfg.controlUrl=document.getElementById("controlUrl").value;
+  const t=document.getElementById("toast");
+  if(t){ t.textContent="Speichern…"; t.style.opacity="1"; }
+  try{
+    const r=await fetch("/api/config",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(cfg)});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    if(t){ t.textContent="Gespeichert ✓"; setTimeout(()=>{ if(t) t.style.opacity="0"; }, 1800); }
+    refreshPreview();
+  }catch(e){ if(t){ t.textContent="Fehler: "+e.message; } }
+}
+function refreshPreview(){
+  const img=document.getElementById("preview");
+  img.src="/preview.png?"+Date.now();
+}
+// Auto-save: any edit saves (debounced) and re-renders — no need to click Speichern.
+let _saveTimer=null;
+function autosave(){ clearTimeout(_saveTimer); _saveTimer=setTimeout(save, 800); }
+document.addEventListener("input", autosave, true);
+document.addEventListener("change", autosave, true);
+load();
+</script>
+</body>
+</html>
