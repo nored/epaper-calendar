@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-Paper Calendar — Flasher</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 560px; margin: 6vh auto; padding: 0 20px; }
+  h1 { font-size: 1.5rem; margin-bottom: .2em; }
+  p.sub { color: #888; margin-top: 0; }
+  ol { padding-left: 1.2em; }
+  li { margin: 1.4em 0; }
+  label { display: block; font-weight: 600; margin: .6em 0 .2em; }
+  input { width: 100%; padding: .55em .6em; font: inherit; box-sizing: border-box;
+          border: 1px solid #999; border-radius: 6px; background: Field; color: FieldText; }
+  button { font: inherit; padding: .55em 1em; border-radius: 6px; border: 1px solid #888;
+           background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin-top: .8em; padding: .5em .7em; border-radius: 6px; white-space: pre-wrap;
+            font-family: ui-monospace, monospace; font-size: .85em; min-height: 1.2em; }
+  .ok { background: #16a34a22; } .err { background: #dc262622; }
+  .note { color: #888; font-size: .85em; }
+  esp-web-install-button { display: inline-block; }
+</style>
+</head>
+<body>
+<h1>E-Paper Calendar — Device Flasher</h1>
+<p class="sub">Chrome or Edge on desktop. Plug the board in over USB-C. <span id="ver"></span></p>
+
+<ol>
+  <li>
+    <strong>Flash the firmware</strong><br>
+    <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
+    <p class="note">Pick the device's serial port when prompted, then "Install". When it finishes,
+       close the dialog and continue below.</p>
+  </li>
+
+  <li>
+    <strong>Send Wi-Fi &amp; server</strong>
+    <label>Wi-Fi name (SSID)</label>
+    <input id="ssid" autocomplete="off" placeholder="MyNetwork">
+    <label>Wi-Fi password</label>
+    <input id="pass" type="password" autocomplete="off" placeholder="••••••••">
+    <label>Server URL</label>
+    <input id="url" autocomplete="off" placeholder="http://192.168.1.50:8090">
+    <p>
+      <button id="send">Connect &amp; send to device</button>
+    </p>
+    <div id="status"></div>
+    <p class="note">Re-select the same serial port. The board must be on its
+       "waiting for CFG" prompt (it is right after flashing, or after a power-cycle
+       while unconfigured).</p>
+  </li>
+</ol>
+
+<script type="module">
+  // Show firmware version from the manifest, if present.
+  fetch("./manifest.json").then(r => r.ok ? r.json() : null).then(m => {
+    if (m?.version) document.getElementById("ver").textContent = `Firmware v${m.version}.`;
+  }).catch(() => {});
+
+  const $ = id => document.getElementById(id);
+  const status = (msg, cls = "") => { const s = $("status"); s.textContent = msg; s.className = cls; };
+
+  $("send").addEventListener("click", async () => {
+    const ssid = $("ssid").value.trim();
+    const pass = $("pass").value;
+    let url = $("url").value.trim().replace(/\/+$/, "");
+    if (!ssid || !url) return status("Wi-Fi name and server URL are required.", "err");
+    if (!navigator.serial) return status("This browser has no Web Serial. Use Chrome/Edge desktop.", "err");
+
+    let port;
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+    } catch (e) { return status("Could not open serial port: " + e.message, "err"); }
+
+    try {
+      // Firmware protocol: CFG<TAB>ssid<TAB>pass<TAB>url<LF>  ->  replies "CFG_OK"
+      const line = `CFG\t${ssid}\t${pass}\t${url}\n`;
+      const writer = port.writable.getWriter();
+      await writer.write(new TextEncoder().encode(line));
+      writer.releaseLock();
+      status("Sent. Waiting for device to confirm…");
+
+      const reader = port.readable.getReader();
+      const deadline = Date.now() + 8000;
+      let buf = "";
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += new TextDecoder().decode(value);
+        if (buf.includes("CFG_OK")) { status("✓ Device configured. You can unplug it.", "ok"); break; }
+        if (buf.includes("CFG_ERR")) { status("Device rejected the config. Re-check the fields.", "err"); break; }
+      }
+      reader.releaseLock();
+      if (!buf.includes("CFG_OK")) status(buf.includes("CFG_ERR") ? "Rejected." :
+        "No confirmation. Power-cycle the board and try again while it shows 'waiting for CFG'.", "err");
+    } catch (e) {
+      status("Serial error: " + e.message, "err");
+    } finally {
+      await port.close().catch(() => {});
+    }
+  });
+</script>
+</body>
+</html>

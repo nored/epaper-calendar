@@ -4,7 +4,7 @@
 import express from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync } from "node:fs";
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar } from "./render.js";
@@ -104,6 +104,27 @@ app.get("/frame.bin", async (req, res) => {
     console.error("render failed:", e);
     res.status(500).send("render error");
   }
+});
+
+// ---- release endpoint: upload a new firmware build into the releases dir ----
+// You build the .bin on your PC and push it here; the device OTAs on its next
+// wake. Guarded by EPAPER_FW_TOKEN if set. POST raw binary:
+//   curl --data-binary @firmware.bin "http://nas:8090/api/firmware?version=2" \
+//        -H "Content-Type: application/octet-stream" -H "X-FW-Token: <token>"
+app.post("/api/firmware", express.raw({ type: "application/octet-stream", limit: "8mb" }), (req, res) => {
+  const token = process.env.EPAPER_FW_TOKEN;
+  if (token && req.get("X-FW-Token") !== token) return res.status(403).json({ error: "bad token" });
+  const version = parseInt(String(req.query.version || ""), 10);
+  if (!Number.isFinite(version) || version <= 0) return res.status(400).json({ error: "version (?version=N) required" });
+  if (!req.body || !req.body.length) return res.status(400).json({ error: "empty body" });
+  try {
+    const dir = join(__dirname, "..", "data", "firmware");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "firmware.bin"), req.body);
+    writeFileSync(join(dir, "version"), String(version));
+    console.log(`[firmware] received v${version} (${req.body.length} bytes)`);
+    res.json({ ok: true, version, bytes: req.body.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- device endpoint: OTA firmware image ----
