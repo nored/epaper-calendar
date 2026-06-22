@@ -27,7 +27,7 @@
 </head>
 <body>
 <h1>E-Paper Calendar — Device Flasher</h1>
-<p class="sub">Chrome or Edge on desktop. Plug the board in over USB-C. <span id="ver"></span></p>
+<p class="sub">A desktop browser with Web Serial — recent Firefox, Chrome, or Edge. Plug the board in over USB-C. <span id="ver"></span></p>
 
 <ol>
   <li>
@@ -69,7 +69,7 @@
     const pass = $("pass").value;
     let url = $("url").value.trim().replace(/\/+$/, "");
     if (!ssid || !url) return status("Wi-Fi name and server URL are required.", "err");
-    if (!navigator.serial) return status("This browser has no Web Serial. Use Chrome/Edge desktop.", "err");
+    if (!navigator.serial) return status("This browser has no Web Serial — use a recent desktop Firefox, Chrome, or Edge.", "err");
 
     let port;
     try {
