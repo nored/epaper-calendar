@@ -8,8 +8,10 @@ services:
     container_name: epaper-calendar
     restart: unless-stopped
     ports:
-      # host:container — reach the control panel at http://<OMV-IP>:3000
-      - "3000:3000"
+      # host:container — left = OMV host port (browse here), right = fixed in-container.
+      # 8090 avoids OMV's UI (80/443) and Portainer (9000/9443). Change the LEFT
+      # number only if 8090 is taken. Reach the control panel at http://<OMV-IP>:8090
+      - "8090:3000"
     environment:
       # The server computes "refresh at local midnight" and stamps German dates,
       # so it must know the timezone. Containers default to UTC otherwise.

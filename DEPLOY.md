@@ -3,14 +3,13 @@
 This runs the Node server in a container on your Open Media Vault box. Portainer
 builds the image straight from your Git repo, so updating later is one click.
 
-What you get: the control panel at `http://<OMV-IP>:3000/`, and the device
-endpoint `http://<OMV-IP>:3000/frame.bin` that the ESP32 fetches.
+What you get: the control panel at `http://<OMV-IP>:8090/`, and the device
+endpoint `http://<OMV-IP>:8090/frame.bin` that the ESP32 fetches.
 
 ---
 
-## One-time: push the project to Git
+## The Git repo (already published)
 
-The project isn't on a Git host yet. Create an **empty private repo** on GitHub
 **Already done** — the project is published at:
 
 - **Repo URL:** `https://github.com/nored/epaper-calendar`
@@ -42,17 +41,17 @@ Containers.
 
 ## Confirm it works
 
-From any browser on your LAN: open `http://<OMV-IP>:3000/`
+From any browser on your LAN: open `http://<OMV-IP>:8090/`
 
 Find `<OMV-IP>` in OMV under System → Network, or it's the address you use for
-the OMV web UI. The control panel should load. `http://<OMV-IP>:3000/preview.png`
+the OMV web UI. The control panel should load. `http://<OMV-IP>:8090/preview.png`
 shows the rendered calendar.
 
 ---
 
 ## Point the device at it
 
-In the firmware, set the server base URL to `http://<OMV-IP>:3000` (the device
+In the firmware, set the server base URL to `http://<OMV-IP>:8090` (the device
 requests `/frame.bin?batt=<volts>&reason=<wake>`). That lives in
 `firmware/src/config.h` (gitignored — edit it on your PC and reflash). Use the
 OMV box's IP; a fixed/reserved IP (DHCP reservation in your router) is wise so it
@@ -73,8 +72,8 @@ the `epaper-data` volume, not in the image.
 
 ## Good to know
 
-- **Port:** host port `3000`. If something else uses it, edit the left number in
-  `docker-compose.yml` (`"8080:3000"` → reach it at `:8080`) and redeploy.
+- **Port:** host port `8090`. If something else uses it, edit the left number in
+  `docker-compose.yml` (e.g. `"8095:3000"` → reach it at `:8095`) and redeploy.
 - **Persistent data:** the named volume `epaper-data` holds `/app/data`. Don't
   delete it unless you want to reset all settings.
 - **Timezone:** set to `Europe/Berlin` in the compose file so "refresh at
