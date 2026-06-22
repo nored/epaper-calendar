@@ -11,23 +11,13 @@ endpoint `http://<OMV-IP>:3000/frame.bin` that the ESP32 fetches.
 ## One-time: push the project to Git
 
 The project isn't on a Git host yet. Create an **empty private repo** on GitHub
-(or your Gitea), then from the project folder on your PC:
+**Already done** — the project is published at:
 
-```bash
-cd ~/Documents/Workspace/ESP32-S3-ePaper-13
-git add .
-git commit -m "Add server + Docker deployment"
-git branch -M main
-git remote add origin <YOUR_REPO_URL>     # e.g. https://github.com/you/epaper.git
-git push -u origin main
-```
+- **Repo URL:** `https://github.com/nored/epaper-calendar`
+- **Branch:** `master`
+- It's **public**, so Portainer needs no access token.
 
-Note your **branch name** (`main`) and the **repo URL** — you'll paste them into
-Portainer next.
-
-> Private repo? You'll also need an access token (GitHub: Settings → Developer
-> settings → Personal access tokens → Fine-grained → give it read access to this
-> one repo). Portainer asks for username + this token below.
+To push future changes, just: `git add -A && git commit -m "..." && git push`.
 
 ---
 
@@ -37,11 +27,10 @@ Portainer next.
 2. **Name:** `epaper-calendar` (lowercase, no spaces).
 3. **Build method:** choose **Repository**.
 4. Fill in:
-   - **Repository URL:** your repo URL from above.
-   - **Repository reference:** `refs/heads/main` (match your branch).
+   - **Repository URL:** `https://github.com/nored/epaper-calendar`
+   - **Repository reference:** `refs/heads/master`
    - **Compose path:** `docker-compose.yml`  ← it's at the repo root.
-   - **Authentication:** turn ON if the repo is private, then enter your Git
-     username and the access token as the password.
+   - **Authentication:** leave OFF (the repo is public).
 5. Click **Deploy the stack**.
 
 Portainer clones the repo, builds the image from `server/Dockerfile`, and starts
