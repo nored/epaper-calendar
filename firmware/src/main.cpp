@@ -23,10 +23,11 @@
 #include <time.h>
 #include <sys/time.h>
 
-extern "C" {
-  #include "DEV_Config.h"
-  #include "EPD_13in3e.h"
-}
+// The EPD driver is C++ (.cpp, uses Arduino SPI/GPIO) with no extern "C" guards
+// in its headers, so include it as C++ — wrapping in extern "C" would ask the
+// linker for C-mangled names the driver never defines.
+#include "DEV_Config.h"
+#include "EPD_13in3e.h"
 #if __has_include("config.h")
   #include "config.h"   // optional: WIFI_SSID / WIFI_PASS / SERVER_BASE_URL defaults
 #endif
