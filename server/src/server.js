@@ -10,6 +10,8 @@ import { buildModel } from "./data.js";
 import { renderCalendar } from "./render.js";
 import { packFramebuffer, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
+import { latestFirmware } from "./firmware.js";
+import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH = join(__dirname, "..", "data", "status.json");
@@ -72,6 +74,8 @@ app.get("/frame.bin", async (req, res) => {
     const fb = packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", "application/octet-stream");
     res.set("X-Sleep-Seconds", String(sleepSeconds));
+    // Advertise the latest firmware so the device can OTA on this same wake.
+    try { res.set("X-FW-Version", String((await latestFirmware()).version)); } catch {}
     res.set("Content-Length", String(fb.length));
     res.send(fb);
     console.log(`[device] served frame.bin batt=${battery ?? "?"}V -> sleep ${sleepSeconds}s`);
@@ -79,6 +83,16 @@ app.get("/frame.bin", async (req, res) => {
     console.error("render failed:", e);
     res.status(500).send("render error");
   }
+});
+
+// ---- device endpoint: OTA firmware image ----
+app.get("/firmware.bin", async (req, res) => {
+  const fw = await latestFirmware();
+  if (!fw.file) return res.status(404).send("no firmware");
+  res.set("Content-Type", "application/octet-stream");
+  res.set("X-FW-Version", String(fw.version));
+  createReadStream(fw.file).pipe(res);
+  console.log(`[device] served firmware.bin v${fw.version}`);
 });
 
 // ---- preview for the browser ----
