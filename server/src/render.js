@@ -3,6 +3,7 @@
 // as PNG for the web preview.
 
 import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
+import QRCode from "qrcode";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -559,6 +560,33 @@ function drawDayCell(ctx, model, cfg, d, inMonth, currentMonth, x, y, w, h) {
   }
 }
 
+// Build a QR for the control-panel URL. Returns an object whose draw() paints
+// crisp, integer-pixel-aligned black modules on a white quiet zone — pure
+// black/white so it survives the panel's 6-colour quantization with no dither
+// or anti-alias fringes (a scaled raster QR would shatter). null if no URL.
+function makeQR(text, target = 116) {
+  if (!text) return null;
+  const qr = QRCode.create(String(text), { errorCorrectionLevel: "M" });
+  const n = qr.modules.size;
+  const data = qr.modules.data; // row-major, 1 = dark module
+  const quiet = 2;              // white border (in modules) so it scans on any backdrop
+  const cells = n + quiet * 2;
+  const mod = Math.max(2, Math.floor(target / cells)); // integer module size, no AA
+  const size = mod * cells;
+  return {
+    size,
+    draw(ctx, x, y) {
+      ctx.fillStyle = C.white;
+      ctx.fillRect(x, y, size, size);
+      ctx.fillStyle = C.black;
+      for (let r = 0; r < n; r++)
+        for (let c = 0; c < n; c++)
+          if (data[r * n + c])
+            ctx.fillRect(x + (c + quiet) * mod, y + (r + quiet) * mod, mod, mod);
+    },
+  };
+}
+
 async function drawInfoPanel(ctx, model, cfg, opts, top, h) {
   const info = model.info;
   hline(ctx, MARGIN, WIDTH - MARGIN, top + 6, 3);
@@ -579,10 +607,25 @@ async function drawInfoPanel(ctx, model, cfg, opts, top, h) {
     drawQuote(ctx, info.quote, MARGIN, wy + weatherH + 10, weatherW, sepBottom - (wy + weatherH + 10));
   }
 
+  // Control-panel QR in the lower-right corner, above the legend. The Demnächst
+  // list reserves this corner so nothing overlaps it.
+  const qr = makeQR(opts.controlUrl);
+  const reserve = qr ? { h: qr.size + 20 } : null; // QR height + caption gap
+
   const sepX = MARGIN + weatherW + 14;
   const demY = top + 30;
   vline(ctx, sepX, demY - 8, sepBottom, 1);
-  drawUpcoming(ctx, model, sepX + 16, demY, WIDTH - MARGIN - (sepX + 16), sepBottom - demY);
+  drawUpcoming(ctx, model, sepX + 16, demY, WIDTH - MARGIN - (sepX + 16), sepBottom - demY, reserve);
+
+  if (qr) {
+    const qx = WIDTH - MARGIN - qr.size;
+    const qy = sepBottom - qr.size;
+    ctx.font = "11px Sans"; ctx.fillStyle = C.black;
+    ctx.textAlign = "right"; ctx.textBaseline = "alphabetic";
+    ctx.fillText("Steuerung", WIDTH - MARGIN, qy - 6);
+    ctx.textAlign = "left";
+    qr.draw(ctx, qx, qy);
+  }
 
   // ---- Legend footer (config-driven): divider above the row, row above the border ----
   hline(ctx, MARGIN, WIDTH - MARGIN, panelBottom, 1);
@@ -635,7 +678,9 @@ function drawQuote(ctx, quote, x, y, w, h) {
 }
 
 // "Demnächst" — generic upcoming-events list (date label + colored marker + title).
-function drawUpcoming(ctx, model, x, y, w, h) {
+// `reserve` (optional) {h} keeps the bottom-right corner clear for the QR: the
+// right column simply ends higher; overflow rolls into the "+N weitere" tally.
+function drawUpcoming(ctx, model, x, y, w, h, reserve = null) {
   const info = model.info;
   ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
   ctx.fillStyle = C.black; ctx.font = "bold 20px SansBold";
@@ -648,17 +693,20 @@ function drawUpcoming(ctx, model, x, y, w, h) {
     return;
   }
 
-  // Two columns: fill column 1 top-to-bottom (soonest), then column 2.
+  // Two columns: fill column 1 top-to-bottom (soonest), then column 2. The right
+  // column loses any rows that would collide with the reserved QR corner.
   const top = y + 22;
   const lineH = 22;
-  const rows = Math.max(1, Math.floor((y + h - top) / lineH));
+  const leftRows = Math.max(1, Math.floor((y + h - top) / lineH));
+  const rightLimit = y + h - (reserve?.h || 0);
+  const rightRows = Math.max(1, Math.floor((rightLimit - top) / lineH));
   const colGap = 16;
   const colW = (w - colGap) / 2;
-  const capacity = rows * 2;
+  const capacity = leftRows + rightRows;
   const show = Math.min(items.length, capacity);
   for (let i = 0; i < show; i++) {
-    const col = Math.floor(i / rows);
-    const row = i % rows;
+    const col = i < leftRows ? 0 : 1;
+    const row = i < leftRows ? i : i - leftRows;
     const cx = x + col * (colW + colGap);
     const ry = top + row * lineH + 12;
     const e = items[i];
@@ -672,6 +720,6 @@ function drawUpcoming(ctx, model, x, y, w, h) {
   }
   if (items.length > show) {
     ctx.font = "13px Sans"; ctx.fillStyle = C.black; ctx.textAlign = "left";
-    ctx.fillText(`+ ${items.length - show} weitere`, x, top + rows * lineH + 10);
+    ctx.fillText(`+ ${items.length - show} weitere`, x, top + leftRows * lineH + 10);
   }
 }
