@@ -610,7 +610,7 @@ async function drawInfoPanel(ctx, model, cfg, opts, top, h) {
   // Control-panel QR in the lower-right corner, above the legend. The Demnächst
   // list reserves this corner so nothing overlaps it.
   const qr = makeQR(opts.controlUrl);
-  const reserve = qr ? { h: qr.size + 20 } : null; // QR height + caption gap
+  const reserve = qr ? { h: qr.size + 10 } : null; // QR height + small gap
 
   const sepX = MARGIN + weatherW + 14;
   const demY = top + 30;
@@ -618,13 +618,7 @@ async function drawInfoPanel(ctx, model, cfg, opts, top, h) {
   drawUpcoming(ctx, model, sepX + 16, demY, WIDTH - MARGIN - (sepX + 16), sepBottom - demY, reserve);
 
   if (qr) {
-    const qx = WIDTH - MARGIN - qr.size;
-    const qy = sepBottom - qr.size;
-    ctx.font = "11px Sans"; ctx.fillStyle = C.black;
-    ctx.textAlign = "right"; ctx.textBaseline = "alphabetic";
-    ctx.fillText("Steuerung", WIDTH - MARGIN, qy - 6);
-    ctx.textAlign = "left";
-    qr.draw(ctx, qx, qy);
+    qr.draw(ctx, WIDTH - MARGIN - qr.size, sepBottom - qr.size);
   }
 
   // ---- Legend footer (config-driven): divider above the row, row above the border ----
