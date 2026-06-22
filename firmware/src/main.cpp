@@ -202,7 +202,7 @@ static FetchResult fetchFrame(uint8_t* buf, float volts) {
   http.setTimeout(20000);
 
   int code = http.GET();
-  if (code != HTTP_OK) { Serial.printf("HTTP %d\n", code); http.end(); return r; }
+  if (code != HTTP_CODE_OK) { Serial.printf("HTTP %d\n", code); http.end(); return r; }
 
   int len = http.getSize();
   if (len > 0 && (uint32_t)len != FRAME_BYTES)
@@ -244,7 +244,7 @@ static void stageOTA() {
   if (!http.begin(url)) { Serial.println("OTA begin failed"); return; }
   http.setTimeout(30000);
   int code = http.GET();
-  if (code != HTTP_OK) { Serial.printf("OTA HTTP %d\n", code); http.end(); return; }
+  if (code != HTTP_CODE_OK) { Serial.printf("OTA HTTP %d\n", code); http.end(); return; }
 
   int len = http.getSize();
   if (len <= 0) { Serial.println("OTA: unknown length"); http.end(); return; }
