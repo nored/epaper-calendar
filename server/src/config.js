@@ -43,7 +43,7 @@ export const DEFAULT_CONFIG = {
 
   // Up to 3 locations for the 3-day weather forecast. Each is either
   // { name } (auto-geocoded) or { name, lat, lon }.
-  locations: [{ name: "Jüterbog", lat: 51.996, lon: 13.08 }],
+  locations: [{ name: "Berlin", lat: 52.52, lon: 13.405 }],
 
   // Up to 3 daily horoscopes shown as columns below the weather. Each entry:
   // { sign } (zodiac key) and an optional { label } (e.g. a person's name).
