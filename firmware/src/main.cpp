@@ -20,6 +20,8 @@
 #include <Preferences.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <time.h>
+#include <sys/time.h>
 
 extern "C" {
   #include "DEV_Config.h"
@@ -39,11 +41,26 @@ extern "C" {
 #define FAIL_RETRY_SECONDS 3600        // if anything fails, retry in 1 h
 #define PROV_BAUD 115200
 
+// ---- exact-midnight wake (NTP-disciplined deep-sleep timer) ----
+#define WAKE_TARGET_HOUR 0             // refresh at local midnight
+#define TZ_BERLIN "CET-1CEST,M3.5.0,M10.5.0/3"  // DST-aware; mktime/localtime use it
+// Approx wall-seconds from wake to the panel-refresh COMPLETING (WiFi + NTP +
+// fetch + ~30 s panel refresh). We aim the disciplined wake this far BEFORE
+// midnight so the new day lands ON screen at 00:00. TUNE after timing one cycle.
+#define WAKE_LEAD_S 60
+#define LOW_BATT_VOLTS 3.5f           // below this, honor the server's backoff instead
+
 // Persisted across deep sleep for fast WiFi reconnect.
 RTC_DATA_ATTR static uint8_t  rtcBssid[6];
 RTC_DATA_ATTR static int32_t  rtcChannel = 0;
 RTC_DATA_ATTR static bool     rtcHaveAp  = false;
 RTC_DATA_ATTR static uint32_t rtcBootCount = 0;
+
+// Clock-discipline state persisted across deep sleep.
+RTC_DATA_ATTR static int64_t  rtcSleepStartUs = 0; // true epoch µs when last deep sleep began
+RTC_DATA_ATTR static int64_t  rtcReqSleepUs   = 0; // µs we asked the timer to sleep last cycle
+RTC_DATA_ATTR static double   rtcClockK       = 1.0; // EMA: real seconds per requested second
+RTC_DATA_ATTR static bool     rtcHaveK        = false;
 
 // Runtime config, loaded from NVS (or config.h fallback).
 static String cfgSsid, cfgPass, cfgBaseUrl;
@@ -68,6 +85,7 @@ static const char* wakeReason() {
 static void deepSleep(uint64_t seconds) {
   Serial.printf("Deep sleep for %llu s\n", seconds);
   Serial.flush();
+  rtcReqSleepUs = 0;   // non-disciplined sleep — don't learn drift from it next wake
   WiFi.disconnect(true);
   esp_wifi_stop();
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
@@ -240,6 +258,64 @@ static void stageOTA() {
   Serial.println("OTA staged — new firmware boots on next daily wake.");
 }
 
+// ---- NTP-disciplined exact-midnight wake -----------------------------------
+static int64_t nowUs() {
+  struct timeval tv; gettimeofday(&tv, NULL);
+  return (int64_t)tv.tv_sec * 1000000LL + tv.tv_usec;
+}
+
+// Sync system time from NTP (TZ = Europe/Berlin). True once the clock is set.
+static bool ntpSync() {
+  configTzTime(TZ_BERLIN, "pool.ntp.org", "time.cloudflare.com", "time.google.com");
+  struct tm ti;
+  for (int i = 0; i < 100; i++) {            // up to ~10 s
+    if (getLocalTime(&ti, 100) && ti.tm_year > 120) return true; // year > 2020
+    delay(0);
+  }
+  return false;
+}
+
+// Fold this cycle's wake error into the clock-rate estimate K (real s per
+// requested s). Call right after a successful NTP sync, before re-sleeping.
+static void updateDiscipline() {
+  if (rtcReqSleepUs <= 0) return;            // first ever sleep — nothing to learn yet
+  int64_t realElapsed = nowUs() - rtcSleepStartUs;
+  double k = (double)realElapsed / (double)rtcReqSleepUs;
+  if (k < 0.5 || k > 2.0) return;            // implausible (NTP glitch / cold start) — ignore
+  rtcClockK = rtcHaveK ? (0.6 * rtcClockK + 0.4 * k) : k; // EMA, seeded on first good sample
+  rtcHaveK = true;
+  Serial.printf("Clock K=%.6f (err this cycle %.1fs)\n",
+                rtcClockK, (realElapsed - rtcReqSleepUs) / 1e6);
+}
+
+// Epoch µs of the next wake target = (local midnight − WAKE_LEAD_S), in the future.
+static int64_t nextTargetUs() {
+  time_t now = time(NULL);
+  struct tm lt; localtime_r(&now, &lt);
+  lt.tm_hour = WAKE_TARGET_HOUR; lt.tm_min = 0; lt.tm_sec = 0; lt.tm_isdst = -1;
+  time_t midnight = mktime(&lt);
+  if (midnight - WAKE_LEAD_S <= now) { lt.tm_mday += 1; lt.tm_isdst = -1; midnight = mktime(&lt); }
+  return ((int64_t)midnight - WAKE_LEAD_S) * 1000000LL;
+}
+
+// Deep sleep until the next disciplined midnight target. Requests timer ticks
+// pre-corrected by K so the RC-oscillator drift lands the wake on target.
+static void disciplinedSleep() {
+  int64_t now = nowUs();
+  int64_t target = nextTargetUs();
+  int64_t desiredReal = target - now;
+  if (desiredReal < 60LL * 1000000LL) desiredReal += 24LL * 3600 * 1000000LL; // safety floor
+  int64_t reqUs = (int64_t)((double)desiredReal / rtcClockK);
+  rtcSleepStartUs = now;
+  rtcReqSleepUs = reqUs;
+  Serial.printf("Disciplined sleep: real %.1fs, request %.1fs (K=%.6f)\n",
+                desiredReal / 1e6, reqUs / 1e6, rtcClockK);
+  Serial.flush();
+  WiFi.disconnect(true); esp_wifi_stop();
+  esp_sleep_enable_timer_wakeup((uint64_t)reqUs);
+  esp_deep_sleep_start();
+}
+
 static void showFrame(const uint8_t* buf) {
   DEV_Module_Init();
   EPD_13IN3E_Init();
@@ -276,6 +352,11 @@ void setup() {
 
   if (!connectWiFi()) { Serial.println("WiFi failed"); deepSleep(FAIL_RETRY_SECONDS); }
 
+  // Sync time and fold this wake's drift into the clock-rate estimate.
+  bool ntpOk = ntpSync();
+  if (ntpOk) updateDiscipline();
+  else Serial.println("NTP failed — falling back to server sleep");
+
   FetchResult res = fetchFrame(frame, volts);
   if (res.sleepSecs < 0) { Serial.println("Fetch failed"); deepSleep(FAIL_RETRY_SECONDS); }
 
@@ -292,7 +373,12 @@ void setup() {
   showFrame(frame);
   heap_caps_free(frame);
 
-  deepSleep((uint64_t)res.sleepSecs);
+  // Low battery: honor the server's backoff (skip discipline). Otherwise, if we
+  // have real time, sleep to the disciplined midnight target; else trust the
+  // server's X-Sleep-Seconds.
+  if (volts > 0.1f && volts < LOW_BATT_VOLTS) deepSleep((uint64_t)res.sleepSecs);
+  else if (ntpOk)                             disciplinedSleep();
+  else                                        deepSleep((uint64_t)res.sleepSecs);
 }
 
 void loop() { /* never reached; everything happens in setup() then deep sleep */ }
