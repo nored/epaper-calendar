@@ -34,10 +34,28 @@ function secondsUntilWake(cfg, battery) {
   const s = cfg.sleep || DEFAULT_CONFIG.sleep;
   if (battery != null && battery < s.lowBatteryVolts) return s.lowBatterySeconds;
   const now = new Date();
-  const next = new Date(now);
-  next.setHours(s.wakeHour, 0, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
+  const next = nextWake(cfg, now);
   return Math.max(s.minSeconds, Math.round((next - now) / 1000));
+}
+
+// The next wakeHour boundary (local time) strictly after `now`.
+function nextWake(cfg, now) {
+  const wakeHour = (cfg.sleep || DEFAULT_CONFIG.sleep).wakeHour;
+  const next = new Date(now);
+  next.setHours(wakeHour, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+// The date the DEVICE's frame should depict. The device wakes at the wakeHour
+// boundary to show the new day; deep-sleep timer drift can make it wake a little
+// early. If it's fetching within DRIFT minutes BEFORE the next boundary, it woke
+// early for that refresh — render the upcoming day so it never shows "yesterday"
+// at/after midnight. After the boundary it's naturally correct.
+const DRIFT_MIN = 30;
+function deviceRenderDate(cfg, now = new Date()) {
+  const next = nextWake(cfg, now);
+  return (next - now) <= DRIFT_MIN * 60 * 1000 ? next : now;
 }
 
 function controlUrl(req) {
@@ -50,7 +68,7 @@ const dateDE = (d) => d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-
 
 async function render(req, opts = {}) {
   const cfg = loadConfig();
-  const model = await buildModel(cfg, new Date());
+  const model = await buildModel(cfg, opts.date || new Date());
   return renderCalendar(model, cfg, {
     controlUrl: controlUrl(req),
     lastSync: opts.lastSync, // date string or undefined — never a clock
@@ -68,8 +86,11 @@ app.get("/frame.bin", async (req, res) => {
   saveStatus(status);
 
   try {
-    // The device just reported its real battery + this is its real update time.
-    const canvas = await render(req, { battery, lastSync: dateDE(new Date()) });
+    // The device just reported its real battery. Render the day it's waking FOR
+    // (snapped past midnight so early clock-drift never shows yesterday); stamp
+    // the sync date to match that day.
+    const renderDate = deviceRenderDate(cfg);
+    const canvas = await render(req, { battery, date: renderDate, lastSync: dateDE(renderDate) });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
     const fb = packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", "application/octet-stream");
@@ -153,8 +174,29 @@ app.get("/api/feed-titles", async (req, res) => {
 // ---- control panel ----
 app.get("/", (_req, res) => res.sendFile(join(__dirname, "..", "public", "index.html")));
 
+// ---- pre-warm: prime the data caches ~90 s before each wake boundary so the
+// device's midnight fetch renders instantly from warm data (and against the new
+// day's weather/quote), not cold network calls on its critical path. ----
+const PREWARM_LEAD_MS = 90 * 1000;
+function scheduleWarm() {
+  const cfg = loadConfig();
+  const now = new Date();
+  const boundary = nextWake(cfg, now);
+  let wait = boundary.getTime() - now.getTime() - PREWARM_LEAD_MS;
+  if (wait < 0) wait += 24 * 3600 * 1000; // already inside the lead window; aim for tomorrow
+  setTimeout(async () => {
+    try {
+      const day = deviceRenderDate(cfg, new Date()); // the upcoming day
+      await buildModel(cfg, day);
+      console.log(`[prewarm] caches primed for ${dateDE(day)}`);
+    } catch (e) { console.error("[prewarm] failed:", e.message); }
+    scheduleWarm(); // reschedule for the next boundary
+  }, wait);
+}
+
 app.listen(PORT, () => {
   console.log(`e-paper calendar server on http://localhost:${PORT}`);
   console.log(`  device fetches:  GET /frame.bin?batt=<volts>&reason=<wake>`);
   console.log(`  control panel:   http://localhost:${PORT}/`);
+  scheduleWarm();
 });
