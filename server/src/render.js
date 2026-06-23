@@ -351,13 +351,16 @@ function drawHeader(ctx, model, cfg, opts) {
     ctx.fillStyle = C.black; ctx.font = "18px Sans"; ctx.fillText(info.moon.name, lx + 22, y);
   }
 
-  // Right side: only ever shows REAL device data (battery only — no update stamp).
+  // Right side: battery only (real device data; no update stamp). The charge %
+  // is drawn centered INSIDE the battery body so the readout always lines up.
   const hasBatt = typeof opts.battery === "number" && opts.battery > 0;
-  const battRight = WIDTH - MARGIN;
   if (hasBatt) {
-    const pct = drawBattery(ctx, battRight - 52, 14, 46, 22, opts.battery);
-    ctx.textAlign = "right"; ctx.fillStyle = C.black; ctx.font = "15px Sans";
-    ctx.fillText(`${Math.round(pct * 100)} %`, battRight, 50);
+    const bw = 84, bh = 30, bx = WIDTH - MARGIN - bw - 4, by = 16; // -4 leaves room for the +nub
+    const pct = drawBattery(ctx, bx, by, bw, bh, opts.battery);
+    ctx.fillStyle = C.black; ctx.font = "bold 17px SansBold";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(`${Math.round(pct * 100)} %`, bx + bw / 2, by + bh / 2 + 1);
+    ctx.textBaseline = "alphabetic";
   }
   ctx.textAlign = "left";
 
