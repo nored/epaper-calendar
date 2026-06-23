@@ -246,14 +246,26 @@ function renderToggles(){
   });
 }
 
+// Single-cell lithium voltage -> charge %, realistic (flat-middle) curve.
+// Mirrors lipoPercent() in render.js so panel and dashboard agree.
+function lipoPercent(v){
+  const pts=[[4.20,100],[3.90,75],[3.80,55],[3.70,38],[3.60,20],[3.50,9],[3.30,0]];
+  if(v>=pts[0][0]) return 100;
+  if(v<=pts[pts.length-1][0]) return 0;
+  for(let i=0;i<pts.length-1;i++){
+    const [vh,ph]=pts[i],[vl,pl]=pts[i+1];
+    if(v<=vh&&v>=vl) return Math.round(pl+(ph-pl)*(v-vl)/(vh-vl));
+  }
+  return 0;
+}
+
 async function loadStatus(){
   const s = await (await fetch("/api/status")).json();
   const b=document.getElementById("statusBadge");
   const ds=document.getElementById("deviceStatus");
   if(s.lastSeen){
     const dt=new Date(s.lastSeen).toLocaleString("de-DE");
-    // 1S LiPo ~3.3 V (empty) .. 4.2 V (full) — same curve as the panel render.
-    const pct = s.battery!=null ? Math.round(Math.max(0,Math.min(1,(s.battery-3.3)/(4.2-3.3)))*100)+' %' : '?';
+    const pct = s.battery!=null ? lipoPercent(s.battery)+' %' : '?';
     // Next wake = last contact + the sleep it was given (device wakes at midnight).
     const wake = s.lastSleepSeconds ? new Date(new Date(s.lastSeen).getTime()+s.lastSleepSeconds*1000)
                    .toLocaleString("de-DE",{weekday:'short',hour:'2-digit',minute:'2-digit'}) : '?';

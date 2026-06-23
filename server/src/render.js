@@ -117,9 +117,22 @@ function drawMoonGlyph(ctx, cx, cy, r, kind) {
   ctx.restore();
 }
 
+// Single-cell Li-ion/LiPo voltage -> charge %, piecewise-linear over a realistic
+// (flat-middle) discharge curve under light load. Returns 0..100.
+function lipoPercent(v) {
+  const pts = [[4.20, 100], [3.90, 75], [3.80, 55], [3.70, 38], [3.60, 20], [3.50, 9], [3.30, 0]];
+  if (v >= pts[0][0]) return 100;
+  if (v <= pts[pts.length - 1][0]) return 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [vh, ph] = pts[i], [vl, pl] = pts[i + 1];
+    if (v <= vh && v >= vl) return Math.round(pl + (ph - pl) * (v - vl) / (vh - vl));
+  }
+  return 0;
+}
+
 function drawBattery(ctx, x, y, w, h, volts) {
-  // 1S LiPo range ~3.3 (empty) .. 4.2 (full)
-  let pct = volts ? Math.max(0, Math.min(1, (volts - 3.3) / (4.2 - 3.3))) : null;
+  // Single-cell lithium: ~3.3 V empty .. 4.2 V full (see lipoPercent for the curve).
+  let pct = volts ? lipoPercent(volts) / 100 : null;
   ctx.strokeStyle = C.black; ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
   ctx.fillStyle = C.black;
