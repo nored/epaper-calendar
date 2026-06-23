@@ -338,16 +338,13 @@ function drawHeader(ctx, model, cfg, opts) {
     ctx.fillStyle = C.black; ctx.font = "18px Sans"; ctx.fillText(info.moon.name, lx + 22, y);
   }
 
-  // Right side: only ever shows REAL device data (no fake battery/clock).
+  // Right side: only ever shows REAL device data (battery only — no update stamp).
   const hasBatt = typeof opts.battery === "number" && opts.battery > 0;
-  ctx.textAlign = "right"; ctx.fillStyle = C.black; ctx.font = "20px Sans";
   const battRight = WIDTH - MARGIN;
-  const syncRight = hasBatt ? battRight - 70 : battRight;
-  if (opts.lastSync) ctx.fillText(`Aktualisiert: ${opts.lastSync}`, syncRight, 30);
   if (hasBatt) {
-    drawBattery(ctx, battRight - 52, 14, 46, 22, opts.battery);
+    const pct = drawBattery(ctx, battRight - 52, 14, 46, 22, opts.battery);
     ctx.textAlign = "right"; ctx.fillStyle = C.black; ctx.font = "15px Sans";
-    ctx.fillText(`${opts.battery.toFixed(2)} V`, battRight, 50);
+    ctx.fillText(`${Math.round(pct * 100)} %`, battRight, 50);
   }
   ctx.textAlign = "left";
 

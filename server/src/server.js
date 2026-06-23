@@ -71,7 +71,6 @@ async function render(req, opts = {}) {
   const model = await buildModel(cfg, opts.date || new Date());
   return renderCalendar(model, cfg, {
     controlUrl: controlUrl(req),
-    lastSync: opts.lastSync, // date string or undefined — never a clock
     battery: opts.battery,   // only ever a real, device-reported value
   });
 }
@@ -87,10 +86,9 @@ app.get("/frame.bin", async (req, res) => {
 
   try {
     // The device just reported its real battery. Render the day it's waking FOR
-    // (snapped past midnight so early clock-drift never shows yesterday); stamp
-    // the sync date to match that day.
+    // (snapped past midnight so early clock-drift never shows yesterday).
     const renderDate = deviceRenderDate(cfg);
-    const canvas = await render(req, { battery, date: renderDate, lastSync: dateDE(renderDate) });
+    const canvas = await render(req, { battery, date: renderDate });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
     const fb = packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", "application/octet-stream");
@@ -140,11 +138,10 @@ app.get("/firmware.bin", async (req, res) => {
 // ---- preview for the browser ----
 app.get("/preview.png", async (req, res) => {
   try {
-    // Reflect the LAST real device contact (if any). No device yet -> no stamp.
+    // Reflect the LAST real device contact (if any). No device yet -> no battery.
     const seen = status.lastSeen ? new Date(status.lastSeen) : null;
     const recent = seen && Date.now() - seen.getTime() < 3 * 86400000;
     const canvas = await render(req, {
-      lastSync: seen ? dateDE(seen) : undefined,
       battery: recent ? status.battery : undefined,
     });
     // Show the TRUE on-screen result: snap to the 6 panel colours (no anti-alias).

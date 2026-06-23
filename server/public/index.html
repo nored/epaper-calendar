@@ -252,8 +252,13 @@ async function loadStatus(){
   const ds=document.getElementById("deviceStatus");
   if(s.lastSeen){
     const dt=new Date(s.lastSeen).toLocaleString("de-DE");
+    // 1S LiPo ~3.3 V (empty) .. 4.2 V (full) — same curve as the panel render.
+    const pct = s.battery!=null ? Math.round(Math.max(0,Math.min(1,(s.battery-3.3)/(4.2-3.3)))*100)+' %' : '?';
+    // Next wake = last contact + the sleep it was given (device wakes at midnight).
+    const wake = s.lastSleepSeconds ? new Date(new Date(s.lastSeen).getTime()+s.lastSleepSeconds*1000)
+                   .toLocaleString("de-DE",{weekday:'short',hour:'2-digit',minute:'2-digit'}) : '?';
     if(b) b.textContent=`Gerät zuletzt: ${dt}`;
-    if(ds) ds.innerHTML=`Zuletzt gesehen: <b>${dt}</b><br>Batterie: <b>${s.battery??'?'} V</b><br>Weckgrund: <b>${s.wakeReason??'?'}</b><br>Nächster Schlaf: <b>${s.lastSleepSeconds?Math.round(s.lastSleepSeconds/3600)+' h':'?'}</b><br>Updates gesamt: <b>${s.count??0}</b>`;
+    if(ds) ds.innerHTML=`Zuletzt gesehen: <b>${dt}</b><br>Batterie: <b>${pct}</b><br>Weckgrund: <b>${s.wakeReason??'?'}</b><br>Nächstes Wecken: <b>${wake}</b><br>Updates gesamt: <b>${s.count??0}</b>`;
   } else { if(b) b.textContent="noch kein Gerätekontakt"; }
 }
 
