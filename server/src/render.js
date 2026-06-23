@@ -145,7 +145,7 @@ function roundRectPath(ctx, x, y, w, h, r) {
 function drawBattery(ctx, x, y, w, h, volts) {
   // Single-cell lithium: ~3.3 V empty .. 4.2 V full (see lipoPercent for the curve).
   let pct = volts ? lipoPercent(volts) / 100 : null;
-  const r = 6;
+  const r = 5;
   // Rounded body outline.
   ctx.strokeStyle = C.black; ctx.lineWidth = 2;
   roundRectPath(ctx, x, y, w, h, r);
@@ -378,9 +378,9 @@ function drawHeader(ctx, model, cfg, opts) {
   // is drawn centered INSIDE the battery body so the readout always lines up.
   const hasBatt = typeof opts.battery === "number" && opts.battery > 0;
   if (hasBatt) {
-    const bw = 84, bh = 30, bx = WIDTH - MARGIN - bw - 4, by = 16; // -4 leaves room for the +nub
+    const bw = 58, bh = 24, bx = WIDTH - MARGIN - bw - 4, by = 18; // -4 leaves room for the +nub
     const pct = drawBattery(ctx, bx, by, bw, bh, opts.battery);
-    ctx.fillStyle = C.black; ctx.font = "bold 17px SansBold";
+    ctx.fillStyle = C.black; ctx.font = "bold 13px SansBold";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(`${Math.round(pct * 100)} %`, bx + bw / 2, by + bh / 2 + 1);
     ctx.textBaseline = "alphabetic";
