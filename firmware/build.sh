@@ -18,8 +18,8 @@ mkdir -p /out /web
 cp "$B/firmware.bin" /out/firmware.bin
 echo "$VERSION" > /out/version
 
-esptool.py --chip esp32s3 merge_bin -o /web/firmware-merged.bin \
-  --flash_mode keep --flash_size 16MB \
+esptool.py --chip esp32s3 merge-bin -o /web/firmware-merged.bin \
+  --flash-mode keep --flash-size 32MB \
   0x0 "$B/bootloader.bin" \
   0x8000 "$B/partitions.bin" \
   0xe000 "$BOOT_APP0" \

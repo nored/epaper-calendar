@@ -45,10 +45,9 @@
 // ---- exact-midnight wake (NTP-disciplined deep-sleep timer) ----
 #define WAKE_TARGET_HOUR 0             // refresh at local midnight
 #define TZ_BERLIN "CET-1CEST,M3.5.0,M10.5.0/3"  // DST-aware; mktime/localtime use it
-// Approx wall-seconds from wake to the panel-refresh COMPLETING (WiFi + NTP +
-// fetch + ~30 s panel refresh). We aim the disciplined wake this far BEFORE
-// midnight so the new day lands ON screen at 00:00. TUNE after timing one cycle.
-#define WAKE_LEAD_S 60
+// Wake EXACTLY at local midnight — no lead time. The device is awake only to run
+// one update (WiFi + NTP + fetch + panel refresh), so the new day lands on screen
+// shortly after 00:00, then it sleeps straight back to the next midnight.
 #define LOW_BATT_VOLTS 3.5f           // below this, honor the server's backoff instead
 
 // Persisted across deep sleep for fast WiFi reconnect.
@@ -289,14 +288,14 @@ static void updateDiscipline() {
                 rtcClockK, (realElapsed - rtcReqSleepUs) / 1e6);
 }
 
-// Epoch µs of the next wake target = (local midnight − WAKE_LEAD_S), in the future.
+// Epoch µs of the next local-midnight wake target, in the future (no lead).
 static int64_t nextTargetUs() {
   time_t now = time(NULL);
   struct tm lt; localtime_r(&now, &lt);
   lt.tm_hour = WAKE_TARGET_HOUR; lt.tm_min = 0; lt.tm_sec = 0; lt.tm_isdst = -1;
   time_t midnight = mktime(&lt);
-  if (midnight - WAKE_LEAD_S <= now) { lt.tm_mday += 1; lt.tm_isdst = -1; midnight = mktime(&lt); }
-  return ((int64_t)midnight - WAKE_LEAD_S) * 1000000LL;
+  if (midnight <= now) { lt.tm_mday += 1; lt.tm_isdst = -1; midnight = mktime(&lt); }
+  return (int64_t)midnight * 1000000LL;
 }
 
 // Deep sleep until the next disciplined midnight target. Requests timer ticks

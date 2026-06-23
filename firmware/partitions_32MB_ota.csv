@@ -1,0 +1,12 @@
+# 32 MB flash, dual-OTA layout for the e-paper calendar client.
+# The firmware stages OTA images by setting the boot partition (Update.h), so it
+# needs two app slots + otadata. It uses no on-flash filesystem (the framebuffer
+# is streamed into PSRAM), so the leftover space is left as an unused data region.
+# Offsets/sizes are hex bytes; everything fits exactly in 0x2000000 (32 MB).
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x9000,    0x5000
+otadata,    data, ota,      0xe000,    0x2000
+app0,       app,  ota_0,    0x10000,   0x800000
+app1,       app,  ota_1,    0x810000,  0x800000
+spiffs,     data, spiffs,   0x1010000, 0xFE0000
+coredump,   data, coredump, 0x1ff0000, 0x10000
