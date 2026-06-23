@@ -34,7 +34,7 @@
 
 // Bumped on every firmware change; the server advertises the latest via the
 // X-FW-Version response header and the device OTA-updates when server > this.
-#define FW_VERSION 1
+#define FW_VERSION 2
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
 #define BATT_ADC_PIN 8                 // ADC1_CH7, calibrated mV x3 (per Waveshare ADC example)
