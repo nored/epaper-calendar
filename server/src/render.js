@@ -130,16 +130,39 @@ function lipoPercent(v) {
   return 0;
 }
 
+// Rounded-rect path via arcTo (portable — no dependency on ctx.roundRect).
+function roundRectPath(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
 function drawBattery(ctx, x, y, w, h, volts) {
   // Single-cell lithium: ~3.3 V empty .. 4.2 V full (see lipoPercent for the curve).
   let pct = volts ? lipoPercent(volts) / 100 : null;
+  const r = 6;
+  // Rounded body outline.
   ctx.strokeStyle = C.black; ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, w, h);
+  roundRectPath(ctx, x, y, w, h, r);
+  ctx.stroke();
+  // Rounded nub.
   ctx.fillStyle = C.black;
-  ctx.fillRect(x + w, y + h * 0.3, 3, h * 0.4); // nub
+  roundRectPath(ctx, x + w, y + h * 0.3, 4, h * 0.4, 2);
+  ctx.fill();
+  // Fill level, clipped to the rounded inner area so its corners match the body.
   if (pct != null) {
+    const ix = x + 2, iy = y + 2, iw = w - 4, ih = h - 4;
+    ctx.save();
+    roundRectPath(ctx, ix, iy, iw, ih, Math.max(0, r - 2));
+    ctx.clip();
     ctx.fillStyle = pct < 0.2 ? C.red : pct < 0.5 ? C.yellow : C.green;
-    ctx.fillRect(x + 2, y + 2, (w - 4) * pct, h - 4);
+    ctx.fillRect(ix, iy, iw * pct, ih);
+    ctx.restore();
   }
   return pct;
 }
