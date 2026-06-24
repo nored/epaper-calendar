@@ -346,7 +346,9 @@ function drawHeader(ctx, model, cfg, opts) {
 
   // Day summary spread across the rest of the header width (replaces "KW 26").
   const sx = MARGIN + yearW + 32;
-  let y = 34;
+  // Drop the date block so its bottom line lands level / slightly below the
+  // "2026" baseline (64) instead of floating above the year.
+  let y = 42;
   ctx.font = "bold 26px SansBold"; ctx.fillStyle = C.black;
   const dateStr = `${info.weekdayName}, ${info.today.getDate()}. ${info.monthName}`;
   ctx.fillText(dateStr, sx, y);
@@ -355,7 +357,7 @@ function drawHeader(ctx, model, cfg, opts) {
   ctx.fillText(`KW ${info.isoWeek} · Tag ${info.dayOfYear} · noch ${info.daysLeft} Tage`, sx + dw + 20, y - 2);
 
   // Line 2: today's holiday / Ferien / name day / moon — inline
-  y = 62;
+  y = 70;
   let lx = sx;
   if (info.publicHoliday) {
     ctx.fillStyle = C.red; ctx.font = "bold 18px SansBold";
@@ -378,7 +380,7 @@ function drawHeader(ctx, model, cfg, opts) {
   // is drawn centered INSIDE the battery body so the readout always lines up.
   const hasBatt = typeof opts.battery === "number" && opts.battery > 0;
   if (hasBatt) {
-    const bw = 58, bh = 24, bx = WIDTH - MARGIN - bw - 4, by = 18; // -4 leaves room for the +nub
+    const bw = 58, bh = 24, bx = WIDTH - MARGIN - bw - 4, by = 46; // -4 leaves room for the +nub; by drops it level with the date block / 2026
     const pct = drawBattery(ctx, bx, by, bw, bh, opts.battery);
     ctx.fillStyle = C.black; ctx.font = "bold 13px SansBold";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
