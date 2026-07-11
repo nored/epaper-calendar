@@ -16,14 +16,27 @@
 
 # ---- stage 1: compile the firmware ----
 FROM python:3.12-slim AS firmware
-# git: PlatformIO fetches the Arduino framework/toolchain via git.
-# build-essential + python3-dev + libffi-dev: on armhf (the OMV box) PlatformIO's
-# Python deps (bitarray, cffi) have no prebuilt wheels, so pip compiles them from
-# C source — which needs a compiler. Without these, `pio run` dies with
-# "error: command 'gcc' failed: No such file or directory". All inside the image;
-# nothing is installed on the host.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git build-essential python3-dev libffi-dev \
+# Two build-time needs, both satisfied INSIDE the image (nothing on the NAS host):
+#
+#  1. git + build-essential + python3-dev + libffi-dev — on armhf the OMV box has
+#     no prebuilt wheels for PlatformIO's Python deps (bitarray, cffi), so pip
+#     compiles them from C. python:3.12-slim ships no compiler, so without these
+#     `pio run` dies with "error: command 'gcc' failed: No such file or directory".
+#
+#  2. libc6:armel + libstdc++6:armel — the ONLY 32-bit-ARM Xtensa toolchain
+#     Espressif publishes is a soft-float armv6l build (chosen for max
+#     compatibility, e.g. Raspberry Pi), and PlatformIO hands it to an armv7l host.
+#     Its binaries request the soft-float loader /lib/ld-linux.so.3, which a
+#     hard-float (armhf) Debian image does NOT have — only /lib/ld-linux-armhf.so.3.
+#     So xtensa-esp32s3-elf-g++ is present but unrunnable: "not found", exit 127.
+#     The armel multiarch runtime supplies that loader plus the soft-float
+#     libc/libm/libdl/libstdc++ the toolchain binaries link against (verified via
+#     readelf: libc.so.6, libdl.so.2, libm.so.6, libstdc++.so.6).
+RUN dpkg --add-architecture armel \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+       git build-essential python3-dev libffi-dev \
+       libc6:armel libstdc++6:armel \
   && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir platformio
 WORKDIR /fw
