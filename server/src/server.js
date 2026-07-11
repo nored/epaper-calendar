@@ -12,11 +12,15 @@ import { packFramebuffer, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
+import { renderSharpTestCard } from "./testcard.js";
 import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH = join(__dirname, "..", "data", "status.json");
 const NOTIFY_PATH = join(__dirname, "..", "data", "notify.json");
+// While this file exists the device is shown a sharp test frame instead of the
+// calendar. Deleting it (panel "Zurücksetzen") rolls back — nothing else changes.
+const TESTFRAME_PATH = join(__dirname, "..", "data", "testframe.bin");
 const PORT = process.env.PORT || 3000;
 
 const app = express();
@@ -96,6 +100,20 @@ app.get("/frame.bin", async (req, res) => {
   saveStatus(status);
 
   try {
+    // Test-frame override: while data/testframe.bin exists, serve it verbatim and
+    // advertise NO firmware (0) so a test never triggers an OTA. Fully reversible —
+    // DELETE /api/testframe removes the file and the calendar returns.
+    if (existsSync(TESTFRAME_PATH)) {
+      const tf = readFileSync(TESTFRAME_PATH);
+      res.set("Content-Type", "application/octet-stream");
+      res.set("X-Sleep-Seconds", String(sleepSeconds));
+      res.set("X-FW-Version", "0");
+      res.set("Content-Length", String(tf.length));
+      res.send(tf);
+      console.log(`[device] served TEST frame (${tf.length} bytes)`);
+      return;
+    }
+
     // The device just reported its real battery. Render the day it's waking FOR
     // (snapped past midnight so early clock-drift never shows yesterday).
     const renderDate = deviceRenderDate(cfg);
@@ -244,6 +262,45 @@ app.post("/api/telegram/test", async (_req, res) => {
 });
 
 app.get("/api/status", (_req, res) => res.json(status));
+
+// ---- sharp-image test (fully reversible) ----
+// POST stages a sharp test card as the device's next frame; DELETE rolls it back
+// to the live calendar. The device shows the change on its next wake — press RST
+// to see it immediately. Nothing about normal rendering changes while inactive.
+app.post("/api/testframe", async (_req, res) => {
+  try {
+    const cfg = loadConfig();
+    const canvas = renderSharpTestCard();
+    const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    const fb = packFramebuffer(rgba, cfg.rotate || 0);
+    const dir = join(__dirname, "..", "data");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(TESTFRAME_PATH, fb);
+    console.log(`[testframe] staged (${fb.length} bytes) — device shows it on next wake`);
+    res.json({ ok: true, active: true, bytes: fb.length });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.delete("/api/testframe", (_req, res) => {
+  try { if (existsSync(TESTFRAME_PATH)) rmSync(TESTFRAME_PATH); }
+  catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  console.log("[testframe] cleared — back to the live calendar");
+  res.json({ ok: true, active: false });
+});
+
+app.get("/api/testframe", (_req, res) => res.json({ active: existsSync(TESTFRAME_PATH) }));
+
+// Browser preview of the sharp test card, snapped to the 6 panel colours (== glass).
+app.get("/testframe.png", async (_req, res) => {
+  try {
+    const canvas = renderSharpTestCard();
+    const ctx = canvas.getContext("2d");
+    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    snapRGBAToPanel(id.data); ctx.putImageData(id, 0, 0);
+    const png = await canvas.encode("png");
+    res.set("Content-Type", "image/png"); res.set("Cache-Control", "no-store"); res.send(png);
+  } catch (e) { console.error(e); res.status(500).send("render error"); }
+});
 
 // Discover the distinct event titles in a feed so the UI can map each one
 // (no keyword guessing). Pass ?url=...&name=...
