@@ -16,8 +16,14 @@
 
 # ---- stage 1: compile the firmware ----
 FROM python:3.12-slim AS firmware
+# git: PlatformIO fetches the Arduino framework/toolchain via git.
+# build-essential + python3-dev + libffi-dev: on armhf (the OMV box) PlatformIO's
+# Python deps (bitarray, cffi) have no prebuilt wheels, so pip compiles them from
+# C source — which needs a compiler. Without these, `pio run` dies with
+# "error: command 'gcc' failed: No such file or directory". All inside the image;
+# nothing is installed on the host.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
+  && apt-get install -y --no-install-recommends git build-essential python3-dev libffi-dev \
   && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir platformio
 WORKDIR /fw
