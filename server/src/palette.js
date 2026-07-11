@@ -34,6 +34,24 @@ export const C = {
 };
 
 // Build a fast 32K-entry lookup (5 bits per channel) mapping RGB -> nibble.
+// Hue (0..360) of an RGB — used to snap by HUE so an anti-aliased edge never maps
+// to a wrong-hue ink (a dark-yellow edge -> yellow/black, never red/green).
+function hueOf(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), c = mx - mn;
+  if (!c) return 0;
+  let h;
+  if (mx === r) h = ((g - b) / c + 6) % 6;
+  else if (mx === g) h = (b - r) / c + 2;
+  else h = (r - g) / c + 4;
+  return h * 60;
+}
+const INK = [ // the four coloured inks, with precomputed hue
+  { code: 0x2, hue: hueOf(255, 233, 0) },
+  { code: 0x3, hue: hueOf(200, 0, 0) },
+  { code: 0x5, hue: hueOf(0, 70, 200) },
+  { code: 0x6, hue: hueOf(0, 130, 60) },
+];
+
 const LUT = new Uint8Array(32 * 32 * 32);
 (function buildLUT() {
   for (let r = 0; r < 32; r++) {
@@ -42,26 +60,21 @@ const LUT = new Uint8Array(32 * 32 * 32);
         const R = (r << 3) | (r >> 2);
         const G = (g << 3) | (g >> 2);
         const B = (b << 3) | (b >> 2);
-        let best = 0;
-        // Desaturated pixels (greys, incl. anti-aliased text edges) must snap to
-        // black/white by brightness. Plain nearest-colour would pick GREEN for
-        // mid-grey (it's the darkest non-black entry), fringing all text green.
+        const lum = 0.299 * R + 0.587 * G + 0.114 * B;
         const mx = Math.max(R, G, B), mn = Math.min(R, G, B);
-        if (mx - mn < 48) {
-          const lum = 0.299 * R + 0.587 * G + 0.114 * B;
-          best = lum < 128 ? 0x0 : 0x1; // black : white
-        } else {
-          let bestDist = Infinity;
-          for (const p of PALETTE) {
-            const dr = R - p.rgb[0];
-            const dg = G - p.rgb[1];
-            const db = B - p.rgb[2];
-            const d = dr * dr + dg * dg + db * db;
-            if (d < bestDist) {
-              bestDist = d;
-              best = p.code;
-            }
-          }
+        let best;
+        // Greys (incl. anti-aliased text edges) -> black/white by brightness.
+        if (mx - mn < 48) best = lum < 128 ? 0x0 : 0x1;
+        // Very dark / very light saturated pixels are edge blends toward black/white.
+        else if (lum < 45) best = 0x0;
+        else if (lum > 222) best = 0x1;
+        // Otherwise snap to the ink with the NEAREST HUE — this is what prevents the
+        // "rainbow" fringe: a blended edge keeps its hue, so it can only become its
+        // own ink, never a different-hue one.
+        else {
+          let bd = Infinity; best = 0x2;
+          const H = hueOf(R, G, B);
+          for (const ink of INK) { let d = Math.abs(H - ink.hue); if (d > 180) d = 360 - d; if (d < bd) { bd = d; best = ink.code; } }
         }
         LUT[(r << 10) | (g << 5) | b] = best;
       }

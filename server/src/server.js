@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer, packBMP6Color } from "./palette.js";
+import { packFramebuffer, packBMP6Color, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
@@ -183,8 +183,13 @@ app.get("/preview.png", async (req, res) => {
     const { canvas } = await render(req, {
       battery: recent ? status.battery : undefined,
     });
-    // Smooth, anti-aliased preview — how the design looks on an LCD. NO hard
-    // 6-colour snapping here; the colour conversion to the panel happens later.
+    // Snap to the exact 6 panel inks so the preview == the panel: provably no grey
+    // and no anti-aliased pixel survives (the canvas AA can't be disabled, so we
+    // resolve it here, hue-aware, same as the device frame).
+    const pctx = canvas.getContext("2d");
+    const id = pctx.getImageData(0, 0, canvas.width, canvas.height);
+    snapRGBAToPanel(id.data);
+    pctx.putImageData(id, 0, 0);
     const png = await canvas.encode("png");
     res.set("Content-Type", "image/png");
     res.set("Cache-Control", "no-store");
