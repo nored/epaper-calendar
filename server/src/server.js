@@ -194,11 +194,8 @@ app.get("/preview.png", async (req, res) => {
     const { canvas } = await render(req, {
       battery: recent ? status.battery : undefined,
     });
-    // Show the TRUE on-screen result: snap to the 6 panel colours (no anti-alias).
-    const ctx = canvas.getContext("2d");
-    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    snapRGBAToPanel(id.data);
-    ctx.putImageData(id, 0, 0);
+    // Smooth, anti-aliased preview — how the design looks on an LCD. NO hard
+    // 6-colour snapping here; the colour conversion to the panel happens later.
     const png = await canvas.encode("png");
     res.set("Content-Type", "image/png");
     res.set("Cache-Control", "no-store");
