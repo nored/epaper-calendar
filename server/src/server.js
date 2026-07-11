@@ -79,7 +79,7 @@ const dateDE = (d) => d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-
 async function render(req, opts = {}) {
   const cfg = loadConfig();
   const model = await buildModel(cfg, opts.date || new Date());
-  const canvas = renderCalendar(model, cfg, {
+  const canvas = await renderCalendar(model, cfg, {
     controlUrl: controlUrl(req),
     battery: opts.battery,   // only ever a real, device-reported value
   });
