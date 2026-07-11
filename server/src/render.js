@@ -11,6 +11,7 @@ import { WIDTH, HEIGHT, C } from "./palette.js";
 import { DOW_SHORT_DE, MONTHS } from "./datetime.js";
 import { relLabel } from "./data.js";
 import { weatherImage } from "./weatherImage.js";
+import { installWSFont } from "./wsfont.js";
 
 // Register the bundled DejaVu fonts (shipped in assets/fonts so the server is
 // portable, not pinned to any one machine's system font paths).
@@ -315,8 +316,9 @@ function drawLegend(ctx, model, y) {
 export async function renderCalendar(model, cfg, opts = {}) {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
-  // crisp: hard 1-bit text (no anti-aliased grey edges) for the panel; default
-  // keeps smooth anti-aliasing for the LCD-like browser preview.
+  // Draw ALL text with the Waveshare bitmap fonts (1-bit glyphs) — overrides
+  // fillText/measureText so the whole calendar renders in those fonts.
+  installWSFont(ctx);
   ctx.antialias = opts.crisp ? "none" : "default";
   ctx.fillStyle = C.white;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
