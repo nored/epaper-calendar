@@ -79,19 +79,32 @@ function vline(ctx, x, y0, y1, width = 1, color = C.black) {
 function drawMarker(ctx, shape, color, cx, cy, size) {
   const fill = binColorCss(color);
   const outline = color === "yellow" || color === "white";
-  ctx.fillStyle = fill;
-  if (shape === "square") {
-    const s = size;
-    ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
-    if (outline) { ctx.strokeStyle = C.black; ctx.lineWidth = 1; ctx.strokeRect(cx - s / 2, cy - s / 2, s, s); }
-  } else if (shape === "bar") {
-    const w = size * 1.4, hgt = size * 0.55;
-    ctx.fillRect(cx - w / 2, cy - hgt / 2, w, hgt);
-    if (outline) { ctx.strokeStyle = C.black; ctx.lineWidth = 1; ctx.strokeRect(cx - w / 2, cy - hgt / 2, w, hgt); }
-  } else { // dot
-    const r = size / 2;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-    if (outline) { ctx.strokeStyle = C.black; ctx.lineWidth = 1; ctx.stroke(); }
+  // @napi-rs/canvas ignores ctx.antialias, so fractional-coord fills/strokes get
+  // anti-aliased edges that quantize to random inks (yellow -> olive -> red/green
+  // "rainbow"). Draw markers as INTEGER-aligned hard fills; the outline is a black
+  // rect with the ink inset 1px — no strokes, no fractional edges, so no fringe.
+  if (shape === "square" || shape === "bar") {
+    const w = shape === "bar" ? Math.max(2, Math.round(size * 1.4)) : Math.round(size);
+    const h = shape === "bar" ? Math.max(2, Math.round(size * 0.55)) : Math.round(size);
+    const x = Math.round(cx - w / 2), y = Math.round(cy - h / 2);
+    if (outline) {
+      ctx.fillStyle = C.black; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = fill; ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+    } else {
+      ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
+    }
+  } else { // dot — filled disc from hard pixel spans (no anti-aliased circle edge)
+    const r = size / 2, r2 = r * r, ccx = Math.round(cx), ccy = Math.round(cy);
+    const ri = Math.ceil(r);
+    const disc = (cxp, cyp, rad, col) => {
+      ctx.fillStyle = col; const rr = rad * rad;
+      for (let dy = -Math.ceil(rad); dy <= Math.ceil(rad); dy++) {
+        const dx = Math.floor(Math.sqrt(Math.max(0, rr - dy * dy)));
+        if (dx >= 0) ctx.fillRect(cxp - dx, cyp + dy, dx * 2 + 1, 1);
+      }
+    };
+    if (outline) { disc(ccx, ccy, r, C.black); disc(ccx, ccy, Math.max(0.5, r - 1), fill); }
+    else disc(ccx, ccy, r, fill);
   }
 }
 
