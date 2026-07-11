@@ -181,12 +181,14 @@ UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, U
         for (UDOUBLE x = 0; x < bmpInfoHeader.biWidth; x++) {
             if (p + 3 > end) return 0;
             Rdata[0] = *p++; Rdata[1] = *p++; Rdata[2] = *p++;
-            if      (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 0)   color = 0; // Black
-            else if (Rdata[0] == 255 && Rdata[1] == 255 && Rdata[2] == 255) color = 1; // White
-            else if (Rdata[0] == 0   && Rdata[1] == 255 && Rdata[2] == 255) color = 2; // Yellow
-            else if (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 255) color = 3; // Red
-            else if (Rdata[0] == 255 && Rdata[1] == 0   && Rdata[2] == 0)   color = 5; // Blue
-            else if (Rdata[0] == 0   && Rdata[1] == 255 && Rdata[2] == 0)   color = 6; // Green
+            // Match the panel's actual (muted) sRGB — must equal server palette.js.
+            // BMP is BGR, so Rdata[0]=B, [1]=G, [2]=R.
+            if      (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 0)   color = 0; // Black   0,0,0
+            else if (Rdata[0] == 255 && Rdata[1] == 255 && Rdata[2] == 255) color = 1; // White   255,255,255
+            else if (Rdata[0] == 0   && Rdata[1] == 233 && Rdata[2] == 255) color = 2; // Yellow  255,233,0
+            else if (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 200) color = 3; // Red     200,0,0
+            else if (Rdata[0] == 200 && Rdata[1] == 70  && Rdata[2] == 0)   color = 5; // Blue    0,70,200
+            else if (Rdata[0] == 60  && Rdata[1] == 130 && Rdata[2] == 0)   color = 6; // Green   0,130,60
             else color = 1;
             Paint_SetPixel(Xstart + x, Ystart + bmpInfoHeader.biHeight - 1 - y, color);
         }

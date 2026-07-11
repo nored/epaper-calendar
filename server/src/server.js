@@ -87,53 +87,56 @@ async function render(req, opts = {}) {
   return { canvas, model };
 }
 
-// ---- device endpoint: packed 6-color framebuffer ----
-app.get("/frame.bin", async (req, res) => {
+// ---- device frame endpoint ----
+// The device fetches a real image and renders it on-board. v5+ use /frame.bmp — a
+// 24-bit BMP in the panel's actual colours, so you can open that same URL in a
+// browser and see exactly what the frame downloads. v4 uses /frame.bin (pure-colour
+// BMP); older firmware gets the packed framebuffer. A request WITHOUT ?batt= (a
+// browser opening the URL to check the image) does not record a device check-in.
+async function serveDeviceFrame(req, res, { bmp, panel }) {
   const battery = req.query.batt ? parseFloat(req.query.batt) : null;
   const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0; // build the device is RUNNING
   const cfg = loadConfig();
   const sleepSeconds = secondsUntilWake(cfg, battery);
 
-  status = { lastSeen: new Date().toISOString(), battery, deviceFw, wakeReason: req.query.reason || null, lastSleepSeconds: sleepSeconds, count: (status.count || 0) + 1 };
-  saveStatus(status);
+  if (battery != null) { // only a real device (reports battery) updates status
+    status = { lastSeen: new Date().toISOString(), battery, deviceFw, wakeReason: req.query.reason || null, lastSleepSeconds: sleepSeconds, count: (status.count || 0) + 1 };
+    saveStatus(status);
+  }
 
   try {
-    // The device just reported its real battery. Render the day it's waking FOR
-    // (snapped past midnight so early clock-drift never shows yesterday). The
-    // device frame uses crisp 1-bit text (no anti-alias) for the panel.
+    // Render the day the device is waking FOR (snapped past midnight so early
+    // clock-drift never shows yesterday), crisp 1-bit text for the panel.
     const renderDate = deviceRenderDate(cfg);
-    const { canvas, model } = await render(req, { battery, date: renderDate, crisp: true });
+    const { canvas } = await render(req, { battery, date: renderDate, crisp: true });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
 
-    // Firmware >= 4 renders on-device with Waveshare's GUI_ReadBmp_RGB_6Color, so it
-    // fetches a 24-bit BMP; older firmware gets the packed framebuffer.
-    const useBmp = deviceFw >= 4;
-    const fb = useBmp ? packBMP6Color(rgba, cfg.rotate || 0) : packFramebuffer(rgba, cfg.rotate || 0);
-    res.set("Content-Type", useBmp ? "image/bmp" : "application/octet-stream");
+    const asBmp = bmp || deviceFw >= 4;
+    const fb = asBmp ? packBMP6Color(rgba, cfg.rotate || 0, panel) : packFramebuffer(rgba, cfg.rotate || 0);
+    res.set("Content-Type", asBmp ? "image/bmp" : "application/octet-stream");
     res.set("X-Sleep-Seconds", String(sleepSeconds));
 
-    // Battery-gated OTA: only advertise a firmware version the device can safely
-    // flash. Below otaMinPercent we advertise 0 so it won't OTA — a brownout
-    // mid-flash can brick it. Unknown battery -> allow (device always reports it).
+    // Battery-gated OTA: advertise a flashable version only when battery is safe.
     const bat = cfg.battery || DEFAULT_CONFIG.battery;
     const pct = battery != null ? lipoPercent(battery) : null;
     const otaOk = pct == null || pct >= bat.otaMinPercent;
     try {
       const fwv = otaOk ? (await latestFirmware()).version : 0;
       res.set("X-FW-Version", String(fwv));
-      if (!otaOk) console.log(`[device] OTA held: battery ${pct}% < ${bat.otaMinPercent}%`);
+      if (!otaOk && battery != null) console.log(`[device] OTA held: battery ${pct}% < ${bat.otaMinPercent}%`);
     } catch {}
 
     res.set("Content-Length", String(fb.length));
     res.send(fb);
-    console.log(`[device] served frame.bin fw=${deviceFw} ${useBmp ? "BMP" : "raw"} batt=${battery ?? "?"}V -> sleep ${sleepSeconds}s`);
-    // Telegram is driven by its own scheduler (below), not the device fetch — but
-    // this fetch just refreshed status.battery, which the next tick will use.
+    if (battery != null) console.log(`[device] served ${asBmp ? (panel ? "BMP(panel)" : "BMP") : "raw"} fw=${deviceFw} batt=${battery}V -> sleep ${sleepSeconds}s`);
   } catch (e) {
     console.error("render failed:", e);
     res.status(500).send("render error");
   }
-});
+}
+
+app.get("/frame.bmp", (req, res) => serveDeviceFrame(req, res, { bmp: true, panel: true }));   // v5+: real panel-colour image
+app.get("/frame.bin", (req, res) => serveDeviceFrame(req, res, { bmp: false, panel: false })); // legacy: v4 pure BMP / older raw framebuffer
 
 // ---- release endpoint: upload a new firmware build into the releases dir ----
 // You build the .bin on your PC and push it here; the device OTAs on its next

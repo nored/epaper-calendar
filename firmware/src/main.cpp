@@ -39,7 +39,7 @@
 // Bumped on every firmware change; the server advertises the latest via the
 // X-FW-Version header. OTA triggers on version MISMATCH (not just ">"), so a git
 // rollback that lowers this number cleanly downgrades the device on its next wake.
-#define FW_VERSION 4
+#define FW_VERSION 5
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
 // Incoming 24-bit BMP: 54-byte header + 1200*1600*3 bytes of pixel data, + slack.
@@ -227,7 +227,7 @@ static FetchResult fetchFrame(uint8_t* buf, uint32_t maxLen, float volts) {
   FetchResult r = { -1, -1, 0 };
   HTTPClient http;
   char url[320];
-  snprintf(url, sizeof(url), "%s/frame.bin?batt=%.2f&reason=%s&boot=%lu&fw=%d",
+  snprintf(url, sizeof(url), "%s/frame.bmp?batt=%.2f&reason=%s&boot=%lu&fw=%d",
            cfgBaseUrl.c_str(), volts, wakeReason(), (unsigned long)rtcBootCount, FW_VERSION);
   Serial.printf("GET %s\n", url);
 

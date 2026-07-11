@@ -100,11 +100,13 @@ export function snapRGBAToPanel(data) {
 // (GUI_ReadBmp_RGB_6Color). Order is R,G,B; the BMP writer emits B,G,R.
 const CODE_PURE = { 0x0: [0, 0, 0], 0x1: [255, 255, 255], 0x2: [255, 255, 0], 0x3: [255, 0, 0], 0x5: [0, 0, 255], 0x6: [0, 255, 0] };
 
-// Encode the render as a 24-bit bottom-up BMP whose six colours are the pure RGBs
-// Waveshare's on-device GUI_ReadBmp_RGB_6Color matches exactly. Each pixel is
-// quantized (nearestNibble) then written as its pure colour. Orientation is set so
-// the device's reader (places BMP row y at panel row H-1-y) shows it upright.
-export function packBMP6Color(rgba, rotate = 0) {
+// Encode the render as a 24-bit bottom-up BMP quantized to the six panel colours.
+// `panel=false` writes the PURE code RGBs the legacy v4 device exact-matches;
+// `panel=true` writes the actual (muted) panel RGBs — a real, viewable image that
+// looks like the glass, which v5+ devices exact-match. Orientation is set so the
+// device's reader (BMP row y -> panel row H-1-y) shows it upright.
+export function packBMP6Color(rgba, rotate = 0, panel = false) {
+  const COLORS = panel ? CODE_RGB : CODE_PURE;
   const rowbytes = WIDTH * 3;                 // 3600 — multiple of 4, no padding
   const pix = rowbytes * HEIGHT;
   const off = 54;
@@ -124,7 +126,7 @@ export function packBMP6Color(rgba, rotate = 0) {
       const sx = flip ? WIDTH - 1 - x : x;
       const sy = flip ? y : HEIGHT - 1 - y;
       const si = (sy * WIDTH + sx) * 4;
-      const rgb = CODE_PURE[nearestNibble(rgba[si], rgba[si + 1], rgba[si + 2])];
+      const rgb = COLORS[nearestNibble(rgba[si], rgba[si + 1], rgba[si + 2])];
       const di = dst + x * 3;
       buf[di] = rgb[2]; buf[di + 1] = rgb[1]; buf[di + 2] = rgb[0]; // BGR
     }
