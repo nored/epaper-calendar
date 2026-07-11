@@ -119,7 +119,7 @@ function drawMoonGlyph(ctx, cx, cy, r, kind) {
 
 // Single-cell Li-ion/LiPo voltage -> charge %, piecewise-linear over a realistic
 // (flat-middle) discharge curve under light load. Returns 0..100.
-function lipoPercent(v) {
+export function lipoPercent(v) {
   const pts = [[4.20, 100], [3.90, 75], [3.80, 55], [3.70, 38], [3.60, 20], [3.50, 9], [3.30, 0]];
   if (v >= pts[0][0]) return 100;
   if (v <= pts[pts.length - 1][0]) return 0;

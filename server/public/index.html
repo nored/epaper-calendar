@@ -93,6 +93,33 @@
     </div>
 
     <div class="card">
+      <h2>Telegram</h2>
+      <label style="display:flex;gap:8px;align-items:center;color:#e7e9ee"><input type="checkbox" id="tgEnabled" style="width:auto"> Benachrichtigungen aktiv</label>
+      <label>Bot-Token</label><input id="tgToken" placeholder="123456:ABC…  (oder per Umgebungsvariable)">
+      <label>Chat-ID</label><input id="tgChat" placeholder="z.B. 12345678">
+      <label>Uhrzeiten (täglich)</label>
+      <div id="tgTimes"></div>
+      <button class="ghost" id="addTgTimeBtn" onclick="addTgTime()" style="margin-top:6px">+ Uhrzeit</button>
+      <div style="margin-top:12px"><label>Sync alle (Min.)</label><input id="tgSync" type="number" min="5" max="1440"></div>
+      <div class="row" style="margin-top:6px">
+        <div><label>Ladewarnung unter (%)</label><input id="batWarn" type="number" min="0" max="100"></div>
+        <div><label>OTA sperren unter (%)</label><input id="batOta" type="number" min="0" max="100"></div>
+      </div>
+      <div style="margin-top:12px"><button class="ghost" onclick="testTelegram()">Test senden</button></div>
+      <p class="hint">Tägliche Nachricht mit den Terminen des Tages, Akkustand und Ladewarnung; zusätzlich bei Änderungen des Tages. Unter „OTA sperren" wird kein Firmware-Update ausgeliefert (Brownout-Schutz). Token/Chat-ID auch per Umgebungsvariable <b>TELEGRAM_BOT_TOKEN</b> / <b>TELEGRAM_CHAT_ID</b> möglich — diese haben Vorrang.</p>
+    </div>
+
+    <div class="card">
+      <h2>Sicherung</h2>
+      <p class="hint" style="margin-top:0">Ganze Konfiguration (Feeds, Orte, Einstellungen, Telegram …) sichern und bei einem Umzug wiederherstellen.</p>
+      <div class="row">
+        <button class="ghost" onclick="exportConfig()">Export ⬇</button>
+        <button class="ghost" onclick="document.getElementById('importFile').click()">Import ⬆</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importConfig(this)">
+    </div>
+
+    <div class="card">
       <h2>Gerät</h2>
       <div class="status" id="deviceStatus">noch kein Kontakt</div>
     </div>
@@ -120,6 +147,18 @@ async function load(){
   document.getElementById("upcomingDays").value = cfg.upcomingDays ?? 7;
   document.getElementById("rotate").value = String(cfg.rotate||0);
   document.getElementById("controlUrl").value = cfg.controlUrl||"";
+  cfg.telegram = cfg.telegram || {};
+  const tg = cfg.telegram;
+  document.getElementById("tgEnabled").checked = tg.enabled !== false;
+  document.getElementById("tgToken").value = tg.botToken || "";
+  document.getElementById("tgChat").value = tg.chatId || "";
+  if(!Array.isArray(tg.dailyTimes)) tg.dailyTimes = tg.dailyTime ? [tg.dailyTime] : ["07:00"];
+  if(!tg.dailyTimes.length) tg.dailyTimes = ["07:00"];
+  renderTgTimes();
+  document.getElementById("tgSync").value = tg.syncMinutes ?? 60;
+  const bt = cfg.battery || {};
+  document.getElementById("batWarn").value = bt.warnPercent ?? 20;
+  document.getElementById("batOta").value = bt.otaMinPercent ?? 35;
   renderFeeds(); renderLocations(); renderQuotes(); renderShades(); renderToggles(); loadStatus();
 }
 
@@ -284,6 +323,14 @@ async function save(){
   cfg.upcomingDays=parseInt(document.getElementById("upcomingDays").value,10)||7;
   cfg.rotate=parseInt(document.getElementById("rotate").value,10);
   cfg.controlUrl=document.getElementById("controlUrl").value;
+  cfg.telegram=Object.assign({},cfg.telegram,{
+    enabled:document.getElementById("tgEnabled").checked,
+    botToken:document.getElementById("tgToken").value.trim(),
+    chatId:document.getElementById("tgChat").value.trim(),
+    syncMinutes:parseInt(document.getElementById("tgSync").value,10)||60,
+  });
+  const pInt=(id,def)=>{const v=parseInt(document.getElementById(id).value,10);return Number.isFinite(v)?Math.max(0,Math.min(100,v)):def;};
+  cfg.battery=Object.assign({},cfg.battery,{warnPercent:pInt("batWarn",20),otaMinPercent:pInt("batOta",35)});
   const t=document.getElementById("toast");
   if(t){ t.textContent="Speichern…"; t.style.opacity="1"; }
   try{
@@ -296,6 +343,50 @@ async function save(){
 function refreshPreview(){
   const img=document.getElementById("preview");
   img.src="/preview.png?"+Date.now();
+}
+
+// --- Telegram send times (one or more) ---
+function renderTgTimes(){
+  const el=document.getElementById("tgTimes"); if(!el) return; el.innerHTML="";
+  cfg.telegram.dailyTimes=cfg.telegram.dailyTimes||["07:00"];
+  cfg.telegram.dailyTimes.forEach((t,i)=>{
+    const d=document.createElement("div"); d.className="row"; d.style.marginBottom="6px";
+    d.innerHTML=`<input type="time" value="${t||'07:00'}" oninput="cfg.telegram.dailyTimes[${i}]=this.value">
+      <button class="danger" style="flex:0 0 auto" onclick="cfg.telegram.dailyTimes.splice(${i},1);renderTgTimes();autosave()">✕</button>`;
+    el.appendChild(d);
+  });
+  const btn=document.getElementById("addTgTimeBtn"); if(btn) btn.style.display = cfg.telegram.dailyTimes.length>=6 ? "none":"";
+}
+function addTgTime(){ cfg.telegram.dailyTimes=cfg.telegram.dailyTimes||[]; if(cfg.telegram.dailyTimes.length>=6)return; cfg.telegram.dailyTimes.push("07:00"); renderTgTimes(); autosave(); }
+
+// --- Config backup ---
+function exportConfig(){ location.href="/api/config/export"; }
+async function importConfig(input){
+  const f=input.files&&input.files[0]; if(!f){return;}
+  const t=document.getElementById("toast");
+  try{
+    const obj=JSON.parse(await f.text());
+    const r=await fetch("/api/config/import",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(obj)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||("HTTP "+r.status));}
+    cfg=await r.json();
+    await load();
+    if(t){t.textContent="Konfiguration importiert ✓";t.style.opacity="1";setTimeout(()=>{if(t)t.style.opacity="0";},1800);}
+    refreshPreview();
+  }catch(e){ if(t){t.textContent="Import-Fehler: "+e.message;t.style.opacity="1";} }
+  finally{ input.value=""; }
+}
+
+// --- Telegram test ---
+async function testTelegram(){
+  const t=document.getElementById("toast");
+  if(t){t.textContent="Sende Test…";t.style.opacity="1";}
+  try{
+    await save(); // persist token/chat first
+    const r=await fetch("/api/telegram/test",{method:"POST"});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!d.ok) throw new Error(d.error||("HTTP "+r.status));
+    if(t){t.textContent="Test gesendet ✓";setTimeout(()=>{if(t)t.style.opacity="0";},1800);}
+  }catch(e){ if(t){t.textContent="Telegram-Fehler: "+e.message;} }
 }
 // Auto-save: any edit saves (debounced) and re-renders — no need to click Speichern.
 let _saveTimer=null;

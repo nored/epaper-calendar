@@ -93,6 +93,29 @@ export const DEFAULT_CONFIG = {
     lowBatteryVolts: 3.5, // below this, back off updates
     lowBatterySeconds: 172800, // 48h between updates when battery is low
   },
+
+  // Battery thresholds (percent of the discharge curve, 0..100). warnPercent
+  // triggers the Telegram charge warning; otaMinPercent blocks firmware OTA below
+  // it, because flashing at low charge risks a brownout that can brick the device.
+  battery: {
+    warnPercent: 20,
+    otaMinPercent: 35,
+  },
+
+  // Telegram notifications: a daily digest (today's tasks + battery + charge
+  // warning) plus an update whenever the day's tasks change. Needs a bot token and
+  // a chat id — set them here, or via env TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+  // (env wins, keeps secrets out of config.json). Inactive until both are present.
+  //   dailyTimes   one or more "HH:MM" local times the digest is sent each day.
+  //   syncMinutes  how often the server re-checks the calendar for changes (feeds
+  //                cache ~1h, so 60 is the practical floor for catching edits).
+  telegram: {
+    enabled: true, // master switch; still requires botToken+chatId (or the env vars)
+    botToken: "",
+    chatId: "",
+    dailyTimes: ["07:00"],
+    syncMinutes: 60,
+  },
 };
 
 let cache = null;

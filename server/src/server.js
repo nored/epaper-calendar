@@ -7,14 +7,16 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync, statSync } from "node:fs";
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
-import { renderCalendar } from "./render.js";
+import { renderCalendar, lipoPercent } from "./render.js";
 import { packFramebuffer, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
+import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
 import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH = join(__dirname, "..", "data", "status.json");
+const NOTIFY_PATH = join(__dirname, "..", "data", "notify.json");
 const PORT = process.env.PORT || 3000;
 
 const app = express();
@@ -28,6 +30,14 @@ function loadStatus() {
 }
 function saveStatus(s) { writeFileSync(STATUS_PATH, JSON.stringify(s, null, 2)); }
 let status = loadStatus();
+
+// Telegram dedupe state — kept separate from status.json (which is rewritten in
+// full on every device fetch) so the last-notified day/hash survive.
+function loadNotify() {
+  if (existsSync(NOTIFY_PATH)) { try { return JSON.parse(readFileSync(NOTIFY_PATH, "utf8")); } catch {} }
+  return { day: null, sentTimes: [], hash: null };
+}
+function saveNotify(n) { try { writeFileSync(NOTIFY_PATH, JSON.stringify(n, null, 2)); } catch {} }
 
 // Seconds until the next configured wake hour (local time).
 function secondsUntilWake(cfg, battery) {
@@ -69,10 +79,11 @@ const dateDE = (d) => d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-
 async function render(req, opts = {}) {
   const cfg = loadConfig();
   const model = await buildModel(cfg, opts.date || new Date());
-  return renderCalendar(model, cfg, {
+  const canvas = renderCalendar(model, cfg, {
     controlUrl: controlUrl(req),
     battery: opts.battery,   // only ever a real, device-reported value
   });
+  return { canvas, model };
 }
 
 // ---- device endpoint: packed 6-color framebuffer ----
@@ -88,16 +99,29 @@ app.get("/frame.bin", async (req, res) => {
     // The device just reported its real battery. Render the day it's waking FOR
     // (snapped past midnight so early clock-drift never shows yesterday).
     const renderDate = deviceRenderDate(cfg);
-    const canvas = await render(req, { battery, date: renderDate });
+    const { canvas, model } = await render(req, { battery, date: renderDate });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
     const fb = packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", "application/octet-stream");
     res.set("X-Sleep-Seconds", String(sleepSeconds));
-    // Advertise the latest firmware so the device can OTA on this same wake.
-    try { res.set("X-FW-Version", String((await latestFirmware()).version)); } catch {}
+
+    // Battery-gated OTA: only advertise a firmware version the device can safely
+    // flash. Below otaMinPercent we advertise 0 so it won't OTA — a brownout
+    // mid-flash can brick it. Unknown battery -> allow (device always reports it).
+    const bat = cfg.battery || DEFAULT_CONFIG.battery;
+    const pct = battery != null ? lipoPercent(battery) : null;
+    const otaOk = pct == null || pct >= bat.otaMinPercent;
+    try {
+      const fwv = otaOk ? (await latestFirmware()).version : 0;
+      res.set("X-FW-Version", String(fwv));
+      if (!otaOk) console.log(`[device] OTA held: battery ${pct}% < ${bat.otaMinPercent}%`);
+    } catch {}
+
     res.set("Content-Length", String(fb.length));
     res.send(fb);
     console.log(`[device] served frame.bin batt=${battery ?? "?"}V -> sleep ${sleepSeconds}s`);
+    // Telegram is driven by its own scheduler (below), not the device fetch — but
+    // this fetch just refreshed status.battery, which the next tick will use.
   } catch (e) {
     console.error("render failed:", e);
     res.status(500).send("render error");
@@ -145,7 +169,7 @@ app.get("/preview.png", async (req, res) => {
     // Reflect the LAST real device contact (if any). No device yet -> no battery.
     const seen = status.lastSeen ? new Date(status.lastSeen) : null;
     const recent = seen && Date.now() - seen.getTime() < 3 * 86400000;
-    const canvas = await render(req, {
+    const { canvas } = await render(req, {
       battery: recent ? status.battery : undefined,
     });
     // Show the TRUE on-screen result: snap to the 6 panel colours (no anti-alias).
@@ -160,26 +184,61 @@ app.get("/preview.png", async (req, res) => {
   } catch (e) { console.error(e); res.status(500).send("render error"); }
 });
 
+// Invalidate ONLY the feed caches (keyed by feed NAME, so a changed URL must
+// refetch). Everything else is keyed by its actual inputs — weather by lat/lon,
+// holidays by state, name days by date, quote by day, horoscope by sign — so those
+// refetch naturally when the input changes. Crucially this does not wipe the daily
+// quote on every autosave (which was hammering the quotes API and causing HTTP 429).
+function invalidateFeedCaches() {
+  try {
+    const cdir = join(__dirname, "..", "data", "cache");
+    if (existsSync(cdir)) for (const f of readdirSync(cdir)) {
+      if (f.startsWith("feed-")) rmSync(join(cdir, f), { force: true });
+    }
+  } catch {}
+}
+
 // ---- config API ----
 app.get("/api/config", (_req, res) => res.json(loadConfig()));
 app.post("/api/config", (req, res) => {
   try {
     const saved = saveConfig(req.body);
-    // Invalidate ONLY the feed caches (keyed by feed NAME, so a changed URL must
-    // refetch). Everything else is keyed by its actual inputs — weather by
-    // lat/lon, holidays by state, name days by date, quote by day, horoscope by
-    // sign — so those refetch naturally when the input changes. Crucially this no
-    // longer wipes the daily quote on every autosave (which was hammering the
-    // quotes API and causing HTTP 429).
-    try {
-      const cdir = join(__dirname, "..", "data", "cache");
-      if (existsSync(cdir)) for (const f of readdirSync(cdir)) {
-        if (f.startsWith("feed-")) rmSync(join(cdir, f), { force: true });
-      }
-    } catch {}
+    invalidateFeedCaches();
+    scheduleTelegramSync(); // pick up changed dailyTime / syncMinutes / credentials
     res.json(saved);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
+
+// ---- config backup: export the whole config for migration/rescue, and import
+// it back. Export is the full data/config.json; import validates it's an object,
+// saves it (merged over defaults), and refreshes feeds + the Telegram schedule. ----
+app.get("/api/config/export", (_req, res) => {
+  const cfg = loadConfig();
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.set("Content-Type", "application/json");
+  res.set("Content-Disposition", `attachment; filename="epaper-config-${stamp}.json"`);
+  res.send(JSON.stringify(cfg, null, 2));
+});
+app.post("/api/config/import", (req, res) => {
+  try {
+    const incoming = req.body;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return res.status(400).json({ error: "expected a config object" });
+    }
+    const saved = saveConfig(incoming);
+    invalidateFeedCaches();
+    scheduleTelegramSync();
+    res.json(saved);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Send a Telegram test message so the user can confirm token + chat id work.
+app.post("/api/telegram/test", async (_req, res) => {
+  const r = await sendTelegram("✅ Test vom E-Paper-Kalender — Telegram ist verbunden.");
+  if (r.ok) return res.json({ ok: true });
+  res.status(400).json({ ok: false, error: r.error || r.reason || "failed" });
+});
+
 app.get("/api/status", (_req, res) => res.json(status));
 
 // Discover the distinct event titles in a feed so the UI can map each one
@@ -216,9 +275,68 @@ function scheduleWarm() {
   }, wait);
 }
 
+// ---- Telegram: periodic calendar sync + a daily digest at one or more configured
+// local times. Each tick rebuilds today's model (feeds refetch on their own ~1 h
+// cache) and sends when either (a) a configured time has passed today and its
+// digest hasn't gone out yet, or (b) today's tasks changed after a digest already
+// went out. Battery is the device's last reported reading. The timing/dedupe
+// decision lives in telegram.js (decideNotification) so it can be unit-tested. ----
+async function telegramTick() {
+  if (!telegramReady()) return; // disabled or missing token/chat id
+  const cfg = loadConfig();
+  const tg = cfg.telegram || DEFAULT_CONFIG.telegram;
+
+  const model = await buildModel(cfg, new Date());
+  const ti = model.dayInfo(model.today);
+  const events = ti.events || [];
+  const now = new Date();
+  const decision = decideNotification({
+    times: normalizeTimes(tg.dailyTimes ?? tg.dailyTime),
+    nowMins: now.getHours() * 60 + now.getMinutes(),
+    todayKey: ti.key,
+    hash: events.map((e) => e.title).join("|"),
+    prev: loadNotify(),
+  });
+  if (!decision.send) return;
+
+  const volts = status.battery ?? null;
+  const pct = volts != null ? lipoPercent(volts) : null;
+  const bat = cfg.battery || DEFAULT_CONFIG.battery;
+  const warn = pct != null && pct < bat.warnPercent;
+  const otaBlocked = pct != null && pct < bat.otaMinPercent;
+  const dateStr = model.today.toLocaleDateString("de-DE", {
+    weekday: "long", day: "2-digit", month: "long", year: "numeric",
+  });
+
+  const r = await sendTelegram(formatDailyDigest({ dateStr, events, pct, volts, warn, otaBlocked }));
+  if (r.ok) {
+    saveNotify(decision.nextState);
+    console.log(`[telegram] ${decision.reason} sent (${events.length} tasks, batt ${pct ?? "?"}%)`);
+  }
+}
+
+let _tgTimer = null;
+function scheduleTelegramSync() {
+  if (_tgTimer) clearTimeout(_tgTimer);
+  const tg = loadConfig().telegram || DEFAULT_CONFIG.telegram;
+  const everyMs = Math.max(5, tg.syncMinutes ?? 60) * 60 * 1000;
+  _tgTimer = setTimeout(function tick() {
+    telegramTick()
+      .catch((e) => console.error("[telegram] tick failed:", e.message))
+      .finally(() => {
+        const mins = Math.max(5, (loadConfig().telegram || DEFAULT_CONFIG.telegram).syncMinutes ?? 60);
+        _tgTimer = setTimeout(tick, mins * 60 * 1000);
+      });
+  }, everyMs);
+}
+
 app.listen(PORT, () => {
   console.log(`e-paper calendar server on http://localhost:${PORT}`);
   console.log(`  device fetches:  GET /frame.bin?batt=<volts>&reason=<wake>`);
   console.log(`  control panel:   http://localhost:${PORT}/`);
   scheduleWarm();
+  // Kick a Telegram check shortly after boot (so a just-configured bot sends
+  // today's digest if the time has already passed), then run on its interval.
+  setTimeout(() => telegramTick().catch(() => {}), 8000);
+  scheduleTelegramSync();
 });
