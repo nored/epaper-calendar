@@ -134,6 +134,37 @@ export function packBMP6Color(rgba, rotate = 0, panel = false) {
   return buf;
 }
 
+// Encode the render as a plain 24-bit BMP with the REAL pixel colours — no
+// quantization, no snapping. This is the actual smooth image (real anti-aliased
+// fonts); the DEVICE reduces it to the 6 panel inks itself. Bottom-up so the
+// device reader (BMP row y -> panel row H-1-y) shows it upright.
+export function rgbaToBMP24(rgba, rotate = 0) {
+  const rowbytes = WIDTH * 3;
+  const pix = rowbytes * HEIGHT;
+  const off = 54;
+  const buf = Buffer.alloc(off + pix);
+  buf.write("BM", 0, "ascii");
+  buf.writeUInt32LE(off + pix, 2);
+  buf.writeUInt32LE(off, 10);
+  buf.writeUInt32LE(40, 14);
+  buf.writeInt32LE(WIDTH, 18);
+  buf.writeInt32LE(HEIGHT, 22);
+  buf.writeUInt16LE(1, 26);
+  buf.writeUInt16LE(24, 28);
+  const flip = rotate === 180;
+  for (let y = 0; y < HEIGHT; y++) {
+    const dst = off + y * rowbytes;
+    for (let x = 0; x < WIDTH; x++) {
+      const sx = flip ? WIDTH - 1 - x : x;
+      const sy = flip ? y : HEIGHT - 1 - y;
+      const si = (sy * WIDTH + sx) * 4;
+      const di = dst + x * 3;
+      buf[di] = rgba[si + 2]; buf[di + 1] = rgba[si + 1]; buf[di + 2] = rgba[si]; // BGR
+    }
+  }
+  return buf;
+}
+
 export function packFramebuffer(rgba, rotate = 0) {
   const out = Buffer.alloc(FRAME_BYTES, 0x11); // default all-white
   const flip = rotate === 180;

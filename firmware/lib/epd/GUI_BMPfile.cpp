@@ -149,9 +149,24 @@ UBYTE GUI_ReadBmp_RGB_6Color(const char *path, UWORD Xstart, UWORD Ystart)
     return 0;
 }
 
-// Same RGB->6-colour reader, but from an in-memory 24-bit BMP (the frame the server
-// sends over HTTP) instead of an SD file. Identical exact-colour matching; the
-// server emits exactly the six pure RGBs matched below.
+// The six panel inks as sRGB (must match server palette.js) + their nibble codes.
+static const UBYTE kPanelRGB[6][3] = {
+    {0, 0, 0}, {255, 255, 255}, {255, 233, 0}, {200, 0, 0}, {0, 70, 200}, {0, 130, 60}
+};
+static const UBYTE kPanelCode[6] = {0, 1, 2, 3, 5, 6};
+static UBYTE Nearest6Color(int r, int g, int b) {
+    int best = 0; long bd = 1L << 30;
+    for (int i = 0; i < 6; i++) {
+        int dr = r - kPanelRGB[i][0], dg = g - kPanelRGB[i][1], db = b - kPanelRGB[i][2];
+        long d = (long)dr * dr + (long)dg * dg + (long)db * db;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return kPanelCode[best];
+}
+
+// Read an in-memory 24-bit BMP (the REAL smooth image the server sends over HTTP)
+// and reduce each pixel to the nearest of the 6 panel inks — the colour conversion
+// happens HERE, on the device, not on the server.
 UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, UWORD Ystart)
 {
     if (data == NULL || len < sizeof(BMPFILEHEADER) + sizeof(BMPINFOHEADER)) {
@@ -181,15 +196,8 @@ UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, U
         for (UDOUBLE x = 0; x < bmpInfoHeader.biWidth; x++) {
             if (p + 3 > end) return 0;
             Rdata[0] = *p++; Rdata[1] = *p++; Rdata[2] = *p++;
-            // Match the panel's actual (muted) sRGB — must equal server palette.js.
-            // BMP is BGR, so Rdata[0]=B, [1]=G, [2]=R.
-            if      (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 0)   color = 0; // Black   0,0,0
-            else if (Rdata[0] == 255 && Rdata[1] == 255 && Rdata[2] == 255) color = 1; // White   255,255,255
-            else if (Rdata[0] == 0   && Rdata[1] == 233 && Rdata[2] == 255) color = 2; // Yellow  255,233,0
-            else if (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 200) color = 3; // Red     200,0,0
-            else if (Rdata[0] == 200 && Rdata[1] == 70  && Rdata[2] == 0)   color = 5; // Blue    0,70,200
-            else if (Rdata[0] == 60  && Rdata[1] == 130 && Rdata[2] == 0)   color = 6; // Green   0,130,60
-            else color = 1;
+            // Reduce the real image to the nearest of the 6 panel inks, on-device.
+            color = Nearest6Color(Rdata[2], Rdata[1], Rdata[0]); // R, G, B (BMP is BGR)
             Paint_SetPixel(Xstart + x, Ystart + bmpInfoHeader.biHeight - 1 - y, color);
         }
         vTaskDelay(pdMS_TO_TICKS(1));

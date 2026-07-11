@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer, packBMP6Color } from "./palette.js";
+import { packFramebuffer, packBMP6Color, rgbaToBMP24 } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
@@ -93,7 +93,7 @@ async function render(req, opts = {}) {
 // browser and see exactly what the frame downloads. v4 uses /frame.bin (pure-colour
 // BMP); older firmware gets the packed framebuffer. A request WITHOUT ?batt= (a
 // browser opening the URL to check the image) does not record a device check-in.
-async function serveDeviceFrame(req, res, { bmp, panel }) {
+async function serveDeviceFrame(req, res, { real }) {
   const battery = req.query.batt ? parseFloat(req.query.batt) : null;
   const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0; // build the device is RUNNING
   const cfg = loadConfig();
@@ -105,15 +105,18 @@ async function serveDeviceFrame(req, res, { bmp, panel }) {
   }
 
   try {
-    // Render the day the device is waking FOR (snapped past midnight so early
-    // clock-drift never shows yesterday), crisp 1-bit text for the panel.
     const renderDate = deviceRenderDate(cfg);
-    const { canvas } = await render(req, { battery, date: renderDate, crisp: true });
+    // real=true (v6+, /frame.bmp): the SMOOTH image with real anti-aliased fonts,
+    // sent raw — the DEVICE reduces it to the 6 panel inks. No server quantization.
+    // Legacy (/frame.bin): crisp render, server-quantized for v4 / raw framebuffer.
+    const { canvas } = await render(req, { battery, date: renderDate, crisp: !real });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
 
-    const asBmp = bmp || deviceFw >= 4;
-    const fb = asBmp ? packBMP6Color(rgba, cfg.rotate || 0, panel) : packFramebuffer(rgba, cfg.rotate || 0);
-    res.set("Content-Type", asBmp ? "image/bmp" : "application/octet-stream");
+    let fb, ctype;
+    if (real) { fb = rgbaToBMP24(rgba, cfg.rotate || 0); ctype = "image/bmp"; }
+    else if (deviceFw >= 4) { fb = packBMP6Color(rgba, cfg.rotate || 0, false); ctype = "image/bmp"; }
+    else { fb = packFramebuffer(rgba, cfg.rotate || 0); ctype = "application/octet-stream"; }
+    res.set("Content-Type", ctype);
     res.set("X-Sleep-Seconds", String(sleepSeconds));
 
     // Battery-gated OTA: advertise a flashable version only when battery is safe.
@@ -128,15 +131,15 @@ async function serveDeviceFrame(req, res, { bmp, panel }) {
 
     res.set("Content-Length", String(fb.length));
     res.send(fb);
-    if (battery != null) console.log(`[device] served ${asBmp ? (panel ? "BMP(panel)" : "BMP") : "raw"} fw=${deviceFw} batt=${battery}V -> sleep ${sleepSeconds}s`);
+    if (battery != null) console.log(`[device] served ${real ? "real-BMP" : (deviceFw >= 4 ? "BMP" : "raw")} fw=${deviceFw} batt=${battery}V -> sleep ${sleepSeconds}s`);
   } catch (e) {
     console.error("render failed:", e);
     res.status(500).send("render error");
   }
 }
 
-app.get("/frame.bmp", (req, res) => serveDeviceFrame(req, res, { bmp: true, panel: true }));   // v5+: real panel-colour image
-app.get("/frame.bin", (req, res) => serveDeviceFrame(req, res, { bmp: false, panel: false })); // legacy: v4 pure BMP / older raw framebuffer
+app.get("/frame.bmp", (req, res) => serveDeviceFrame(req, res, { real: true }));   // v6+: real smooth image, device converts
+app.get("/frame.bin", (req, res) => serveDeviceFrame(req, res, { real: false })); // legacy: v4 quantized BMP / older raw framebuffer
 
 // ---- release endpoint: upload a new firmware build into the releases dir ----
 // You build the .bin on your PC and push it here; the device OTAs on its next
