@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer } from "./palette.js";
+import { packFramebuffer, packBMP6Color } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
@@ -103,8 +103,14 @@ app.get("/frame.bin", async (req, res) => {
     const renderDate = deviceRenderDate(cfg);
     const { canvas, model } = await render(req, { battery, date: renderDate, crisp: true });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
-    const fb = packFramebuffer(rgba, cfg.rotate || 0);
-    res.set("Content-Type", "application/octet-stream");
+
+    // Firmware >= 4 renders on-device with Waveshare's GUI_ReadBmp_RGB_6Color, so it
+    // fetches a 24-bit BMP; older firmware gets the packed framebuffer. The device
+    // reports its build via ?fw=N.
+    const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0;
+    const useBmp = deviceFw >= 4;
+    const fb = useBmp ? packBMP6Color(rgba, cfg.rotate || 0) : packFramebuffer(rgba, cfg.rotate || 0);
+    res.set("Content-Type", useBmp ? "image/bmp" : "application/octet-stream");
     res.set("X-Sleep-Seconds", String(sleepSeconds));
 
     // Battery-gated OTA: only advertise a firmware version the device can safely

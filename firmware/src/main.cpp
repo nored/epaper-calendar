@@ -30,15 +30,20 @@
 // linker for C-mangled names the driver never defines.
 #include "DEV_Config.h"
 #include "EPD_13in3e.h"
+#include "GUI_Paint.h"      // Waveshare paint buffer + Paint_SetPixel (4bpp/6-colour)
+#include "GUI_BMPfile.h"    // Waveshare RGB->6-colour BMP reader (buffer variant)
 #if __has_include("config.h")
   #include "config.h"   // optional: WIFI_SSID / WIFI_PASS / SERVER_BASE_URL defaults
 #endif
 
 // Bumped on every firmware change; the server advertises the latest via the
-// X-FW-Version response header and the device OTA-updates when server > this.
-#define FW_VERSION 3
+// X-FW-Version header. OTA triggers on version MISMATCH (not just ">"), so a git
+// rollback that lowers this number cleanly downgrades the device on its next wake.
+#define FW_VERSION 4
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
+// Incoming 24-bit BMP: 54-byte header + 1200*1600*3 bytes of pixel data, + slack.
+#define BMP_MAX (1200UL * 1600UL * 3UL + 4096UL)
 #define BATT_ADC_PIN 8                 // ADC1_CH7, calibrated mV x3 (per Waveshare ADC example)
 #define WIFI_TIMEOUT_MS 20000
 #define FAIL_RETRY_SECONDS 3600        // if anything fails, retry in 1 h
@@ -213,12 +218,13 @@ static bool connectWiFi() {
   return true;
 }
 
-struct FetchResult { long sleepSecs; long fwVersion; };
+struct FetchResult { long sleepSecs; long fwVersion; uint32_t bytes; };
 
-// Download the framebuffer into `buf`. sleepSecs<0 on failure; fwVersion is the
-// server's advertised latest build (-1 if absent).
-static FetchResult fetchFrame(uint8_t* buf, float volts) {
-  FetchResult r = { -1, -1 };
+// Download the server's frame — a 24-bit BMP (fw>=4) — into `buf` (up to maxLen).
+// sleepSecs<0 on failure; bytes = how much arrived; fwVersion is the server's
+// advertised latest build (-1 if absent).
+static FetchResult fetchFrame(uint8_t* buf, uint32_t maxLen, float volts) {
+  FetchResult r = { -1, -1, 0 };
   HTTPClient http;
   char url[320];
   snprintf(url, sizeof(url), "%s/frame.bin?batt=%.2f&reason=%s&boot=%lu&fw=%d",
@@ -234,16 +240,15 @@ static FetchResult fetchFrame(uint8_t* buf, float volts) {
   if (code != HTTP_CODE_OK) { Serial.printf("HTTP %d\n", code); http.end(); return r; }
 
   int len = http.getSize();
-  if (len > 0 && (uint32_t)len != FRAME_BYTES)
-    Serial.printf("Unexpected length %d (want %lu)\n", len, FRAME_BYTES);
+  uint32_t cap = (len > 0 && (uint32_t)len <= maxLen) ? (uint32_t)len : maxLen;
 
   WiFiClient* stream = http.getStreamPtr();
   uint32_t got = 0;
   uint32_t t0 = millis();
-  while (got < FRAME_BYTES && (http.connected() || stream->available())) {
+  while (got < cap && (http.connected() || stream->available())) {
     size_t avail = stream->available();
     if (avail) {
-      int rd = stream->readBytes(buf + got, min(avail, (size_t)(FRAME_BYTES - got)));
+      int rd = stream->readBytes(buf + got, min(avail, (size_t)(cap - got)));
       got += rd;
     } else {
       if (millis() - t0 > 20000) break;
@@ -254,12 +259,13 @@ static FetchResult fetchFrame(uint8_t* buf, float volts) {
   String fwHdr   = http.header("X-FW-Version");
   http.end();
 
-  Serial.printf("Received %lu/%lu bytes in %lu ms, sleep=%ld, fw=%s\n",
-                (unsigned long)got, FRAME_BYTES, millis() - t0, sleepSecs, fwHdr.c_str());
-  if (got != FRAME_BYTES) return r;
+  Serial.printf("Received %lu bytes in %lu ms, sleep=%ld, fw=%s\n",
+                (unsigned long)got, millis() - t0, sleepSecs, fwHdr.c_str());
+  if (got < 54) return r; // too small to be a BMP
   if (sleepSecs < 60) sleepSecs = 86400; // safety default: 1 day
   r.sleepSecs = sleepSecs;
   r.fwVersion = fwHdr.isEmpty() ? -1 : fwHdr.toInt();
+  r.bytes = got;
   return r;
 }
 
@@ -389,8 +395,9 @@ void setup() {
   float volts = readBatteryVolts();
   Serial.printf("Battery: %.2f V\n", volts);
 
-  uint8_t* frame = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
-  if (!frame) { Serial.println("PSRAM alloc failed!"); failSleep(); }
+  uint8_t* frame  = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
+  uint8_t* bmpBuf = (uint8_t*)heap_caps_malloc(BMP_MAX, MALLOC_CAP_SPIRAM);
+  if (!frame || !bmpBuf) { Serial.println("PSRAM alloc failed!"); failSleep(); }
 
   if (!connectWiFi()) { Serial.println("WiFi failed"); failSleep(); }
 
@@ -399,14 +406,15 @@ void setup() {
   if (ntpOk) updateDiscipline();
   else Serial.println("NTP failed — falling back to server sleep");
 
-  FetchResult res = fetchFrame(frame, volts);
+  FetchResult res = fetchFrame(bmpBuf, BMP_MAX, volts);
   if (res.sleepSecs < 0) { Serial.println("Fetch failed"); failSleep(); }
   rtcFailStreak = 0;   // a good fetch clears the backoff
 
-  // OTA piggybacks this same wake, while WiFi is still up.
+  // OTA piggybacks this same wake, while WiFi is still up. Trigger on any version
+  // MISMATCH so a rollback (lower number) downgrades cleanly, not only upgrades.
   bool otaStaged = false;
-  if (res.fwVersion > FW_VERSION) {
-    Serial.printf("Newer firmware available (%ld > %d) — staging OTA\n", res.fwVersion, FW_VERSION);
+  if (res.fwVersion > 0 && res.fwVersion != FW_VERSION) {
+    Serial.printf("Firmware change advertised (%ld != %d) — staging OTA\n", res.fwVersion, FW_VERSION);
     otaStaged = stageOTA();
   }
 
@@ -422,6 +430,15 @@ void setup() {
     Serial.flush();
     esp_restart();
   }
+
+  // Decode the server's 24-bit BMP into the packed 6-colour framebuffer on-device,
+  // with Waveshare's reader (Paint scale 6 = 4bpp, matching EPD_13IN3E_Display).
+  Paint_NewImage(frame, 1200, 1600, 0, EPD_13IN3E_WHITE);
+  Paint_SetScale(6);
+  Paint_SelectImage(frame);
+  Paint_Clear(EPD_13IN3E_WHITE);
+  GUI_ReadBmp_RGB_6Color_buf(bmpBuf, res.bytes, 0, 0);
+  heap_caps_free(bmpBuf);
 
   // Radio is off for the slow (~15-20 s) panel refresh — drop the CPU to 80 MHz
   // for it. SPI recomputes its divider per transaction so the 20 MHz panel clock

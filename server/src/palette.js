@@ -96,6 +96,42 @@ export function snapRGBAToPanel(data) {
 // `rotate` (0 or 180) flips the image to match the panel's mounting / cable side.
 // The layout is fixed at 1200x1600, so only 0/180 make sense here; mounting it
 // as landscape would need a separate landscape layout, not a pixel rotation.
+// nibble code -> the PURE sRGB the device's Waveshare reader exact-matches
+// (GUI_ReadBmp_RGB_6Color). Order is R,G,B; the BMP writer emits B,G,R.
+const CODE_PURE = { 0x0: [0, 0, 0], 0x1: [255, 255, 255], 0x2: [255, 255, 0], 0x3: [255, 0, 0], 0x5: [0, 0, 255], 0x6: [0, 255, 0] };
+
+// Encode the render as a 24-bit bottom-up BMP whose six colours are the pure RGBs
+// Waveshare's on-device GUI_ReadBmp_RGB_6Color matches exactly. Each pixel is
+// quantized (nearestNibble) then written as its pure colour. Orientation is set so
+// the device's reader (places BMP row y at panel row H-1-y) shows it upright.
+export function packBMP6Color(rgba, rotate = 0) {
+  const rowbytes = WIDTH * 3;                 // 3600 — multiple of 4, no padding
+  const pix = rowbytes * HEIGHT;
+  const off = 54;
+  const buf = Buffer.alloc(off + pix);
+  buf.write("BM", 0, "ascii");
+  buf.writeUInt32LE(off + pix, 2);            // file size
+  buf.writeUInt32LE(off, 10);                 // pixel-data offset
+  buf.writeUInt32LE(40, 14);                  // info header size
+  buf.writeInt32LE(WIDTH, 18);
+  buf.writeInt32LE(HEIGHT, 22);
+  buf.writeUInt16LE(1, 26);                   // planes
+  buf.writeUInt16LE(24, 28);                  // bpp
+  const flip = rotate === 180;
+  for (let y = 0; y < HEIGHT; y++) {
+    const dst = off + y * rowbytes;
+    for (let x = 0; x < WIDTH; x++) {
+      const sx = flip ? WIDTH - 1 - x : x;
+      const sy = flip ? y : HEIGHT - 1 - y;
+      const si = (sy * WIDTH + sx) * 4;
+      const rgb = CODE_PURE[nearestNibble(rgba[si], rgba[si + 1], rgba[si + 2])];
+      const di = dst + x * 3;
+      buf[di] = rgb[2]; buf[di + 1] = rgb[1]; buf[di + 2] = rgb[0]; // BGR
+    }
+  }
+  return buf;
+}
+
 export function packFramebuffer(rgba, rotate = 0) {
   const out = Buffer.alloc(FRAME_BYTES, 0x11); // default all-white
   const flip = rotate === 180;
