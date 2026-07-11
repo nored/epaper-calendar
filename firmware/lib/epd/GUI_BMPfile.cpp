@@ -89,7 +89,7 @@ UBYTE GUI_ReadBmp_RGB_6Color(const char *path, UWORD Xstart, UWORD Ystart)
         Paint_SetRotate(0);
     else if((bmpInfoHeader.biWidth == 1600)&&(bmpInfoHeader.biHeight == 1200))
         Paint_SetRotate(90);
-    ESP_LOGI("pixel = %ld x %ld",bmpInfoHeader.biWidth,bmpInfoHeader.biHeight);
+    printf("pixel = %ld x %ld\n", (long)bmpInfoHeader.biWidth, (long)bmpInfoHeader.biHeight);
     
     // Determine if it is a monochrome bitmap
     int readbyte = bmpInfoHeader.biBitCount;
