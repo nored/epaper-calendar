@@ -58,6 +58,17 @@ RUN pio run -e esp32s3 \
 FROM node:22-slim
 WORKDIR /app
 
+# Run in Europe/Berlin. All the server's calendar/notification math uses local time
+# (datetime.js) — the daily Telegram digest fires at the configured "HH:MM" evaluated
+# against the process clock. A stock Node container is UTC, so without this a "07:00"
+# digest would fire at 09:00 Berlin (summer). node:slim ships no zoneinfo, so TZ alone
+# is silently ignored — tzdata must be installed for it to resolve. Early, stable layer
+# (before npm) so it stays cached across source changes.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tzdata \
+  && rm -rf /var/lib/apt/lists/*
+ENV TZ=Europe/Berlin
+
 # Install dependencies first for better build-cache reuse. The platform-specific
 # native canvas binary is downloaded here, for THIS container's architecture.
 COPY server/package.json server/package-lock.json ./

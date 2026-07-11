@@ -352,12 +352,29 @@ function renderTgTimes(){
   cfg.telegram.dailyTimes=cfg.telegram.dailyTimes||["07:00"];
   cfg.telegram.dailyTimes.forEach((t,i)=>{
     const d=document.createElement("div"); d.className="row"; d.style.marginBottom="6px";
-    d.innerHTML=`<input type="time" value="${t||'07:00'}" oninput="cfg.telegram.dailyTimes[${i}]=this.value">
+    d.innerHTML=`<input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM (24h)"
+        pattern="([01][0-9]|2[0-3]):[0-5][0-9]" value="${t||'07:00'}" style="letter-spacing:1px"
+        oninput="onTgTimeInput(${i},this)" onblur="onTgTimeBlur(${i},this)">
       <button class="danger" style="flex:0 0 auto" onclick="cfg.telegram.dailyTimes.splice(${i},1);renderTgTimes();autosave()">✕</button>`;
     el.appendChild(d);
   });
   const btn=document.getElementById("addTgTimeBtn"); if(btn) btn.style.display = cfg.telegram.dailyTimes.length>=6 ? "none":"";
 }
+// Always 24h, independent of the browser's locale (a native <input type=time> would
+// show AM/PM in some locales). Keep only digits, auto-insert the colon after HH.
+function onTgTimeInput(i,el){
+  let v=el.value.replace(/[^0-9]/g,"").slice(0,4);
+  if(v.length>=3) v=v.slice(0,2)+":"+v.slice(2);
+  el.value=v; cfg.telegram.dailyTimes[i]=v;
+}
+function clampHHMM(s){
+  const m=/^(\d{1,2}):?(\d{0,2})$/.exec(String(s||"").trim());
+  if(!m) return "07:00";
+  const h=Math.min(23,parseInt(m[1]||"7",10)||0);
+  const mi=Math.min(59,parseInt(m[2]||"0",10)||0);
+  return String(h).padStart(2,"0")+":"+String(mi).padStart(2,"0");
+}
+function onTgTimeBlur(i,el){ const v=clampHHMM(el.value); el.value=v; cfg.telegram.dailyTimes[i]=v; autosave(); }
 function addTgTime(){ cfg.telegram.dailyTimes=cfg.telegram.dailyTimes||[]; if(cfg.telegram.dailyTimes.length>=6)return; cfg.telegram.dailyTimes.push("07:00"); renderTgTimes(); autosave(); }
 
 // --- Config backup ---
