@@ -217,7 +217,7 @@ app.post("/api/config", (req, res) => {
   try {
     const saved = saveConfig(req.body);
     invalidateFeedCaches();
-    scheduleTelegramSync(); // pick up changed dailyTime / syncMinutes / credentials
+    kickTelegramSoon(); // a just-added past-due time (or new credentials) sends promptly
     res.json(saved);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -240,7 +240,7 @@ app.post("/api/config/import", (req, res) => {
     }
     const saved = saveConfig(incoming);
     invalidateFeedCaches();
-    scheduleTelegramSync();
+    kickTelegramSoon();
     res.json(saved);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -328,45 +328,63 @@ async function buildDigestMessage(cfg) {
   return { message, events, pct, key: ti.key };
 }
 
+let _tgBusy = false; // re-entrancy guard: the interval and a save-kick must not overlap
 async function telegramTick() {
+  if (_tgBusy) return;
   if (!telegramReady()) return; // disabled or missing token/chat id
-  const cfg = loadConfig();
-  const tg = cfg.telegram || DEFAULT_CONFIG.telegram;
+  _tgBusy = true;
+  try {
+    const cfg = loadConfig();
+    const tg = cfg.telegram || DEFAULT_CONFIG.telegram;
 
-  const model = await buildModel(cfg, new Date());
-  const ti = model.dayInfo(model.today);
-  const events = ti.events || [];
-  const now = new Date();
-  const decision = decideNotification({
-    times: normalizeTimes(tg.dailyTimes ?? tg.dailyTime),
-    nowMins: now.getHours() * 60 + now.getMinutes(),
-    todayKey: ti.key,
-    hash: events.map((e) => e.title).join("|"),
-    prev: loadNotify(),
-  });
-  if (!decision.send) return;
+    const model = await buildModel(cfg, new Date());
+    const ti = model.dayInfo(model.today);
+    const events = ti.events || [];
+    const now = new Date();
+    const decision = decideNotification({
+      times: normalizeTimes(tg.dailyTimes ?? tg.dailyTime),
+      nowMins: now.getHours() * 60 + now.getMinutes(),
+      todayKey: ti.key,
+      hash: events.map((e) => e.title).join("|"),
+      prev: loadNotify(),
+    });
+    if (!decision.send) return;
 
-  const { message, pct } = await buildDigestMessage(cfg);
-  const r = await sendTelegram(message);
-  if (r.ok) {
-    saveNotify(decision.nextState);
-    console.log(`[telegram] ${decision.reason} sent (${events.length} tasks, batt ${pct ?? "?"}%)`);
+    const { message, pct } = await buildDigestMessage(cfg);
+    const r = await sendTelegram(message);
+    if (r.ok) {
+      saveNotify(decision.nextState);
+      console.log(`[telegram] ${decision.reason} sent (${events.length} tasks, batt ${pct ?? "?"}%)`);
+    }
+  } finally {
+    _tgBusy = false;
   }
 }
 
+// One steady per-minute checker. A configured "HH:MM" fires within ~a minute of the
+// wall clock — NOT coupled to some coarse sync interval (the old bug: the send time
+// was only noticed on an hourly poll, so a 07:00 digest could land any time before
+// 08:00). Cheap: decideNotification dedupes and buildModel is served from the warm
+// cache. telegramTick re-reads config every run, so changed times/credentials are
+// picked up automatically — there is nothing to "reschedule".
 let _tgTimer = null;
 function scheduleTelegramSync() {
-  if (_tgTimer) clearTimeout(_tgTimer);
-  const tg = loadConfig().telegram || DEFAULT_CONFIG.telegram;
-  const everyMs = Math.max(5, tg.syncMinutes ?? 60) * 60 * 1000;
-  _tgTimer = setTimeout(function tick() {
-    telegramTick()
-      .catch((e) => console.error("[telegram] tick failed:", e.message))
-      .finally(() => {
-        const mins = Math.max(5, (loadConfig().telegram || DEFAULT_CONFIG.telegram).syncMinutes ?? 60);
-        _tgTimer = setTimeout(tick, mins * 60 * 1000);
-      });
-  }, everyMs);
+  if (_tgTimer) return; // idempotent — start the interval exactly once
+  _tgTimer = setInterval(() => {
+    telegramTick().catch((e) => console.error("[telegram] tick failed:", e.message));
+  }, 60 * 1000);
+}
+
+// After a config change, check once shortly after — debounced so an autosave burst
+// (one POST per keystroke) collapses to a single check — so a just-added time that's
+// already passed today sends promptly instead of waiting for the next minute tick.
+let _tgKick = null;
+function kickTelegramSoon() {
+  if (_tgKick) clearTimeout(_tgKick);
+  _tgKick = setTimeout(() => {
+    _tgKick = null;
+    telegramTick().catch((e) => console.error("[telegram] tick failed:", e.message));
+  }, 1500);
 }
 
 app.listen(PORT, () => {
