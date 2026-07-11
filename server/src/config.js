@@ -86,22 +86,6 @@ export const DEFAULT_CONFIG = {
   // Add your own in the control panel; one is picked per day if non-empty.
   quotes: [],
 
-  // Firmware OTA source. The device always flashes the LOCAL copy the server
-  // serves at /firmware.bin. Besides the manual push (firmware/push.sh ->
-  // /api/firmware), the server can pull the latest GitHub Release's .bin asset
-  // into that copy — once at boot and again just before the device's daily wake.
-  //   repo          "owner/name" of the releases repo; empty = GitHub sync off
-  //                 (env EPAPER_FW_REPO overrides this — handy for Portainer).
-  //   token         GitHub token for a PRIVATE repo / rate-limit relief; a public
-  //                 repo needs none (env EPAPER_GH_TOKEN overrides this).
-  //   assetPattern  regex picking the release asset that is the firmware image.
-  // Release tags carry the integer version, e.g. "fw-v3" (see firmware/release.sh).
-  firmware: {
-    repo: "",
-    token: "",
-    assetPattern: "\\.bin$",
-  },
-
   // Sleep scheduling the device honors via the X-Sleep-Seconds response header.
   sleep: {
     wakeHour: 0, // refresh at midnight (fixed; not user-configurable)
