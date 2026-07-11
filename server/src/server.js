@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer, packBMP6Color, rgbaToBMP24 } from "./palette.js";
+import { packFramebuffer, packBMP6Color } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
@@ -106,15 +106,13 @@ async function serveDeviceFrame(req, res, { real }) {
 
   try {
     const renderDate = deviceRenderDate(cfg);
-    // real=true (v6+, /frame.bmp): the SMOOTH image with real anti-aliased fonts,
-    // sent raw — the DEVICE reduces it to the 6 panel inks. No server quantization.
-    // Legacy (/frame.bin): crisp render, server-quantized for v4 / raw framebuffer.
-    const { canvas } = await render(req, { battery, date: renderDate, crisp: !real });
+    const { canvas } = await render(req, { battery, date: renderDate, crisp: true });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
 
+    // /frame.bmp and v4+ get a 24-bit BMP in the six exact RGBs the device's verbatim
+    // Waveshare GUI_ReadBmp_RGB_6Color matches; older firmware gets the raw framebuffer.
     let fb, ctype;
-    if (real) { fb = rgbaToBMP24(rgba, cfg.rotate || 0); ctype = "image/bmp"; }
-    else if (deviceFw >= 4) { fb = packBMP6Color(rgba, cfg.rotate || 0, false); ctype = "image/bmp"; }
+    if (real || deviceFw >= 4) { fb = packBMP6Color(rgba, cfg.rotate || 0, false); ctype = "image/bmp"; }
     else { fb = packFramebuffer(rgba, cfg.rotate || 0); ctype = "application/octet-stream"; }
     res.set("Content-Type", ctype);
     res.set("X-Sleep-Seconds", String(sleepSeconds));

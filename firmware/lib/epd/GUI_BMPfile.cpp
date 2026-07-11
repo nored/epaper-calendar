@@ -149,24 +149,9 @@ UBYTE GUI_ReadBmp_RGB_6Color(const char *path, UWORD Xstart, UWORD Ystart)
     return 0;
 }
 
-// The six panel inks as sRGB (must match server palette.js) + their nibble codes.
-static const UBYTE kPanelRGB[6][3] = {
-    {0, 0, 0}, {255, 255, 255}, {255, 233, 0}, {200, 0, 0}, {0, 70, 200}, {0, 130, 60}
-};
-static const UBYTE kPanelCode[6] = {0, 1, 2, 3, 5, 6};
-static UBYTE Nearest6Color(int r, int g, int b) {
-    int best = 0; long bd = 1L << 30;
-    for (int i = 0; i < 6; i++) {
-        int dr = r - kPanelRGB[i][0], dg = g - kPanelRGB[i][1], db = b - kPanelRGB[i][2];
-        long d = (long)dr * dr + (long)dg * dg + (long)db * db;
-        if (d < bd) { bd = d; best = i; }
-    }
-    return kPanelCode[best];
-}
-
-// Read an in-memory 24-bit BMP (the REAL smooth image the server sends over HTTP)
-// and reduce each pixel to the nearest of the 6 panel inks — the colour conversion
-// happens HERE, on the device, not on the server.
+// In-memory version of GUI_ReadBmp_RGB_6Color — identical exact-colour matching as
+// the original Waveshare reader, just from the HTTP-downloaded buffer instead of an
+// SD file. The server sends the six exact RGBs matched below.
 UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, UWORD Ystart)
 {
     if (data == NULL || len < sizeof(BMPFILEHEADER) + sizeof(BMPINFOHEADER)) {
@@ -196,8 +181,14 @@ UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, U
         for (UDOUBLE x = 0; x < bmpInfoHeader.biWidth; x++) {
             if (p + 3 > end) return 0;
             Rdata[0] = *p++; Rdata[1] = *p++; Rdata[2] = *p++;
-            // Reduce the real image to the nearest of the 6 panel inks, on-device.
-            color = Nearest6Color(Rdata[2], Rdata[1], Rdata[0]); // R, G, B (BMP is BGR)
+            // Exact-colour match, identical to Waveshare's GUI_ReadBmp_RGB_6Color.
+            if      (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 0)   color = 0; // Black
+            else if (Rdata[0] == 255 && Rdata[1] == 255 && Rdata[2] == 255) color = 1; // White
+            else if (Rdata[0] == 0   && Rdata[1] == 255 && Rdata[2] == 255) color = 2; // Yellow
+            else if (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 255) color = 3; // Red
+            else if (Rdata[0] == 255 && Rdata[1] == 0   && Rdata[2] == 0)   color = 5; // Blue
+            else if (Rdata[0] == 0   && Rdata[1] == 255 && Rdata[2] == 0)   color = 6; // Green
+            else color = 1;
             Paint_SetPixel(Xstart + x, Ystart + bmpInfoHeader.biHeight - 1 - y, color);
         }
         vTaskDelay(pdMS_TO_TICKS(1));
