@@ -4,7 +4,7 @@
 import express from "express";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync, statSync } from "node:fs";
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar } from "./render.js";
@@ -131,6 +131,10 @@ app.get("/firmware.bin", async (req, res) => {
   if (!fw.file) return res.status(404).send("no firmware");
   res.set("Content-Type", "application/octet-stream");
   res.set("X-FW-Version", String(fw.version));
+  // MUST send Content-Length: the device's HTTPClient.getSize() returns -1 for a
+  // chunked response and stageOTA() bails ("unknown length"). A known length also
+  // keeps HTTPClient from splicing chunk framing into the flash image.
+  res.set("Content-Length", String(statSync(fw.file).size));
   createReadStream(fw.file).pipe(res);
   console.log(`[device] served firmware.bin v${fw.version}`);
 });

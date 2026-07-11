@@ -20,6 +20,8 @@
 #include <Preferences.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <esp_system.h>
+#include <driver/gpio.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -34,7 +36,7 @@
 
 // Bumped on every firmware change; the server advertises the latest via the
 // X-FW-Version response header and the device OTA-updates when server > this.
-#define FW_VERSION 2
+#define FW_VERSION 3
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
 #define BATT_ADC_PIN 8                 // ADC1_CH7, calibrated mV x3 (per Waveshare ADC example)
@@ -55,6 +57,7 @@ RTC_DATA_ATTR static uint8_t  rtcBssid[6];
 RTC_DATA_ATTR static int32_t  rtcChannel = 0;
 RTC_DATA_ATTR static bool     rtcHaveAp  = false;
 RTC_DATA_ATTR static uint32_t rtcBootCount = 0;
+RTC_DATA_ATTR static uint32_t rtcFailStreak = 0; // consecutive failed wakes -> backoff
 
 // Clock-discipline state persisted across deep sleep.
 RTC_DATA_ATTR static int64_t  rtcSleepStartUs = 0; // true epoch µs when last deep sleep began
@@ -82,14 +85,40 @@ static const char* wakeReason() {
   }
 }
 
+// Latch the panel's power-enable and reset lines LOW and keep them held through
+// deep sleep. Without this, esp_deep_sleep_start() releases every GPIO to
+// high-impedance: the panel's power MOSFET gate floats and the display's DC-DC /
+// controller can stay powered for the whole ~24 h sleep — a milliamp-level leak
+// that flattens the battery. GPIO1/GPIO2 are RTC-capable on the S3, so the hold
+// survives deep sleep. Released again at the top of setup() before we re-drive.
+static void panelPowerOffAndHold() {
+  pinMode(EPD_PWR_PIN, OUTPUT); digitalWrite(EPD_PWR_PIN, LOW); // panel power off
+  pinMode(EPD_RST_PIN, OUTPUT); digitalWrite(EPD_RST_PIN, LOW); // hold panel in reset
+  gpio_hold_en((gpio_num_t)EPD_PWR_PIN);
+  gpio_hold_en((gpio_num_t)EPD_RST_PIN);
+  gpio_deep_sleep_hold_en();
+}
+
 static void deepSleep(uint64_t seconds) {
   Serial.printf("Deep sleep for %llu s\n", seconds);
   Serial.flush();
   rtcReqSleepUs = 0;   // non-disciplined sleep — don't learn drift from it next wake
   WiFi.disconnect(true);
   esp_wifi_stop();
+  panelPowerOffAndHold();
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
   esp_deep_sleep_start();
+}
+
+// Sleep after a failed wake, backing off exponentially (1h, 2h, 4h, capped 6h)
+// so a flaky server / marginal WiFi can't burn a full radio cycle every hour.
+static void failSleep() {
+  rtcFailStreak++;
+  uint32_t shift = rtcFailStreak > 3 ? 3 : (rtcFailStreak - 1);
+  uint32_t backoff = (uint32_t)FAIL_RETRY_SECONDS << shift; // 3600 << {0..3}
+  if (backoff > 6UL * 3600) backoff = 6UL * 3600;
+  Serial.printf("Fail #%lu — backoff %lu s\n", (unsigned long)rtcFailStreak, (unsigned long)backoff);
+  deepSleep(backoff);
 }
 
 // ---- config (NVS) ----------------------------------------------------------
@@ -237,25 +266,26 @@ static FetchResult fetchFrame(uint8_t* buf, float volts) {
 // Stage an OTA from <base>/firmware.bin. Stages the new image (sets boot
 // partition) but does NOT reboot — it runs on the next daily wake, so no extra
 // radio cycle today. Must be called while WiFi is up (before the panel refresh).
-static void stageOTA() {
+static bool stageOTA() {
   HTTPClient http;
   String url = cfgBaseUrl + "/firmware.bin";
   Serial.printf("OTA GET %s\n", url.c_str());
-  if (!http.begin(url)) { Serial.println("OTA begin failed"); return; }
+  if (!http.begin(url)) { Serial.println("OTA begin failed"); return false; }
   http.setTimeout(30000);
   int code = http.GET();
-  if (code != HTTP_CODE_OK) { Serial.printf("OTA HTTP %d\n", code); http.end(); return; }
+  if (code != HTTP_CODE_OK) { Serial.printf("OTA HTTP %d\n", code); http.end(); return false; }
 
   int len = http.getSize();
-  if (len <= 0) { Serial.println("OTA: unknown length"); http.end(); return; }
-  if (!Update.begin(len)) { Serial.printf("OTA begin(%d) failed\n", len); http.end(); return; }
+  if (len <= 0) { Serial.println("OTA: unknown length"); http.end(); return false; }
+  if (!Update.begin(len)) { Serial.printf("OTA begin(%d) failed\n", len); http.end(); return false; }
 
   size_t written = Update.writeStream(*http.getStreamPtr());
   http.end();
-  if ((int)written != len) { Serial.printf("OTA wrote %u/%d\n", (unsigned)written, len); Update.abort(); return; }
-  if (!Update.end(true))   { Serial.printf("OTA end failed: %s\n", Update.errorString()); return; }
+  if ((int)written != len) { Serial.printf("OTA wrote %u/%d\n", (unsigned)written, len); Update.abort(); return false; }
+  if (!Update.end(true))   { Serial.printf("OTA end failed: %s\n", Update.errorString()); return false; }
 
-  Serial.println("OTA staged — new firmware boots on next daily wake.");
+  Serial.println("OTA staged — boot partition set to the new image.");
+  return true;
 }
 
 // ---- NTP-disciplined exact-midnight wake -----------------------------------
@@ -312,6 +342,7 @@ static void disciplinedSleep() {
                 desiredReal / 1e6, reqUs / 1e6, rtcClockK);
   Serial.flush();
   WiFi.disconnect(true); esp_wifi_stop();
+  panelPowerOffAndHold();
   esp_sleep_enable_timer_wakeup((uint64_t)reqUs);
   esp_deep_sleep_start();
 }
@@ -326,6 +357,17 @@ static void showFrame(const uint8_t* buf) {
 
 void setup() {
   rtcBootCount++;
+  // Release the deep-sleep pad hold from last cycle so we can drive the panel
+  // pins again (they were latched LOW to keep the display powered off).
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis((gpio_num_t)EPD_PWR_PIN);
+  gpio_hold_dis((gpio_num_t)EPD_RST_PIN);
+
+  // A manual wake (reset button / power-on) is anything other than our daily
+  // timer. On such a wake we apply a freshly-staged OTA immediately instead of
+  // waiting for the next midnight — makes the reset-to-update test one press.
+  bool manualWake = esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER;
+
   Serial.begin(PROV_BAUD);
   delay(50);
   Serial.printf("\n=== boot #%lu, wake=%s, fw=%d ===\n",
@@ -348,9 +390,9 @@ void setup() {
   Serial.printf("Battery: %.2f V\n", volts);
 
   uint8_t* frame = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
-  if (!frame) { Serial.println("PSRAM alloc failed!"); deepSleep(FAIL_RETRY_SECONDS); }
+  if (!frame) { Serial.println("PSRAM alloc failed!"); failSleep(); }
 
-  if (!connectWiFi()) { Serial.println("WiFi failed"); deepSleep(FAIL_RETRY_SECONDS); }
+  if (!connectWiFi()) { Serial.println("WiFi failed"); failSleep(); }
 
   // Sync time and fold this wake's drift into the clock-rate estimate.
   bool ntpOk = ntpSync();
@@ -358,18 +400,33 @@ void setup() {
   else Serial.println("NTP failed — falling back to server sleep");
 
   FetchResult res = fetchFrame(frame, volts);
-  if (res.sleepSecs < 0) { Serial.println("Fetch failed"); deepSleep(FAIL_RETRY_SECONDS); }
+  if (res.sleepSecs < 0) { Serial.println("Fetch failed"); failSleep(); }
+  rtcFailStreak = 0;   // a good fetch clears the backoff
 
   // OTA piggybacks this same wake, while WiFi is still up.
+  bool otaStaged = false;
   if (res.fwVersion > FW_VERSION) {
     Serial.printf("Newer firmware available (%ld > %d) — staging OTA\n", res.fwVersion, FW_VERSION);
-    stageOTA();
+    otaStaged = stageOTA();
   }
 
   // WiFi off before the slow panel refresh to save power.
   WiFi.disconnect(true);
   esp_wifi_stop();
 
+  // On a manual wake (reset button), apply a just-staged OTA now: reboot straight
+  // into the new image rather than waiting for midnight. The new firmware redraws
+  // the panel itself, so skip the redundant refresh with the outgoing build.
+  if (otaStaged && manualWake) {
+    Serial.println("OTA staged on manual wake — rebooting into new firmware now");
+    Serial.flush();
+    esp_restart();
+  }
+
+  // Radio is off for the slow (~15-20 s) panel refresh — drop the CPU to 80 MHz
+  // for it. SPI recomputes its divider per transaction so the 20 MHz panel clock
+  // is unaffected; the refresh is dominated by the panel's own busy wait anyway.
+  setCpuFrequencyMhz(80);
   showFrame(frame);
   heap_caps_free(frame);
 
