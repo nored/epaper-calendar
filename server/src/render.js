@@ -762,7 +762,9 @@ function drawUpcoming(ctx, model, x, y, w, h, reserve = null) {
     ctx.fillText(label, cx, ry);
     const labW = Math.max(44, ctx.measureText(label).width + 8);
     drawMarker(ctx, e.marker || "dot", e.color, cx + labW + 3, ry - 5, 9);
-    ctx.font = "14px Sans"; ctx.fillStyle = binColorCss(e.color);
+    // Marker carries the colour; the title stays black so low-contrast inks
+    // (yellow, green) remain readable on white.
+    ctx.font = "14px Sans"; ctx.fillStyle = C.black;
     ctx.fillText(fitText(ctx, e.title, colW - (labW + 15)), cx + labW + 13, ry);
   }
   if (items.length > show) {
