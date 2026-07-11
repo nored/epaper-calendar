@@ -363,10 +363,8 @@ function drawHeader(ctx, model, cfg, opts) {
     ctx.fillStyle = C.red; ctx.font = "bold 18px SansBold";
     const t = `Feiertag: ${info.publicHoliday.name}`; ctx.fillText(t, lx, y); lx += ctx.measureText(t).width + 22;
   }
-  if (info.schoolHoliday && cfg.show?.schoolHolidays !== false) {
-    ctx.fillStyle = C.green; ctx.font = "bold 18px SansBold";
-    const t = `Ferien: ${info.schoolHoliday}`; ctx.fillText(t, lx, y); lx += ctx.measureText(t).width + 22;
-  }
+  // (School-holiday name intentionally NOT shown in the title area — it's evident
+  // from the day, and the month grid still marks holiday spans with the green strip.)
   if (info.nameDays.length) {
     ctx.fillStyle = C.black; ctx.font = "18px Sans";
     const t = `Namenstag: ${info.nameDays.join(", ")}`; ctx.fillText(t, lx, y); lx += ctx.measureText(t).width + 22;

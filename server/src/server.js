@@ -234,7 +234,11 @@ app.post("/api/config/import", (req, res) => {
 
 // Send a Telegram test message so the user can confirm token + chat id work.
 app.post("/api/telegram/test", async (_req, res) => {
-  const r = await sendTelegram("✅ Test vom E-Paper-Kalender — Telegram ist verbunden.");
+  // Send TODAY's real digest (not a generic "connected" ping), so the test shows
+  // exactly what the daily message will look like.
+  const cfg = loadConfig();
+  const { message } = await buildDigestMessage(cfg);
+  const r = await sendTelegram(message);
   if (r.ok) return res.json({ ok: true });
   res.status(400).json({ ok: false, error: r.error || r.reason || "failed" });
 });
@@ -281,6 +285,23 @@ function scheduleWarm() {
 // digest hasn't gone out yet, or (b) today's tasks changed after a digest already
 // went out. Battery is the device's last reported reading. The timing/dedupe
 // decision lives in telegram.js (decideNotification) so it can be unit-tested. ----
+// Build TODAY's actual digest text (same content the scheduled send uses), so the
+// "Test" button and the scheduler produce the identical real message.
+async function buildDigestMessage(cfg) {
+  const model = await buildModel(cfg, new Date());
+  const ti = model.dayInfo(model.today);
+  const events = ti.events || [];
+  const volts = status.battery ?? null;
+  const pct = volts != null ? lipoPercent(volts) : null;
+  const bat = cfg.battery || DEFAULT_CONFIG.battery;
+  const warn = pct != null && pct < bat.warnPercent;
+  const otaBlocked = pct != null && pct < bat.otaMinPercent;
+  const dateStr = model.today.toLocaleDateString("de-DE", {
+    weekday: "long", day: "2-digit", month: "long", year: "numeric",
+  });
+  return { message: formatDailyDigest({ dateStr, events, pct, volts, warn, otaBlocked }), events, pct, key: ti.key };
+}
+
 async function telegramTick() {
   if (!telegramReady()) return; // disabled or missing token/chat id
   const cfg = loadConfig();
@@ -299,16 +320,8 @@ async function telegramTick() {
   });
   if (!decision.send) return;
 
-  const volts = status.battery ?? null;
-  const pct = volts != null ? lipoPercent(volts) : null;
-  const bat = cfg.battery || DEFAULT_CONFIG.battery;
-  const warn = pct != null && pct < bat.warnPercent;
-  const otaBlocked = pct != null && pct < bat.otaMinPercent;
-  const dateStr = model.today.toLocaleDateString("de-DE", {
-    weekday: "long", day: "2-digit", month: "long", year: "numeric",
-  });
-
-  const r = await sendTelegram(formatDailyDigest({ dateStr, events, pct, volts, warn, otaBlocked }));
+  const { message, pct } = await buildDigestMessage(cfg);
+  const r = await sendTelegram(message);
   if (r.ok) {
     saveNotify(decision.nextState);
     console.log(`[telegram] ${decision.reason} sent (${events.length} tasks, batt ${pct ?? "?"}%)`);
