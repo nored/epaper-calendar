@@ -11,6 +11,7 @@ import { WIDTH, HEIGHT, C } from "./palette.js";
 import { DOW_SHORT_DE, MONTHS } from "./datetime.js";
 import { relLabel } from "./data.js";
 import { weatherImage } from "./weatherImage.js";
+import { installPXFont } from "./pxfont.js";
 
 // Register the bundled DejaVu fonts (shipped in assets/fonts so the server is
 // portable, not pinned to any one machine's system font paths).
@@ -315,8 +316,9 @@ function drawLegend(ctx, model, y) {
 export async function renderCalendar(model, cfg, opts = {}) {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
-  // Panel has no grey, so the device frame is rendered with anti-aliasing off
-  // (crisp 1-bit DejaVu); the browser preview keeps smoothing.
+  // All text is drawn as hinted 1-bit DejaVu bitmaps (font-to-py style) — what the
+  // panel actually shows, no grey. Overrides fillText/measureText.
+  installPXFont(ctx);
   ctx.antialias = opts.crisp ? "none" : "default";
   ctx.fillStyle = C.white;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
