@@ -313,13 +313,11 @@ function drawLegend(ctx, model, y) {
 }
 
 export async function renderCalendar(model, cfg, opts = {}) {
-  // opts.scale>1 renders the whole layout supersampled (same coordinates, more
-  // pixels). The caller downsamples with a threshold to get sharper bilevel text.
-  const S = opts.scale && opts.scale > 1 ? opts.scale : 1;
-  const canvas = createCanvas(WIDTH * S, HEIGHT * S);
+  const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
-  if (S !== 1) ctx.scale(S, S);
-  ctx.antialias = "default";
+  // crisp: hard 1-bit text (no anti-aliased grey edges) for the panel; default
+  // keeps smooth anti-aliasing for the LCD-like browser preview.
+  ctx.antialias = opts.crisp ? "none" : "default";
   ctx.fillStyle = C.white;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 

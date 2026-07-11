@@ -8,23 +8,15 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer, snapRGBAToPanel, packSupersampled, previewSupersampled, WIDTH, HEIGHT } from "./palette.js";
-import { createCanvas } from "@napi-rs/canvas";
+import { packFramebuffer } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
-
-// Supersample factor for the "sharp calendar" test: render the real calendar at
-// this scale, then downsample with a threshold for crisper bilevel text.
-const SHARP_SCALE = 3;
 import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_PATH = join(__dirname, "..", "data", "status.json");
 const NOTIFY_PATH = join(__dirname, "..", "data", "notify.json");
-// While this file exists the device is shown a sharp test frame instead of the
-// calendar. Deleting it (panel "Zurücksetzen") rolls back — nothing else changes.
-const TESTFRAME_PATH = join(__dirname, "..", "data", "testframe.bin");
 const PORT = process.env.PORT || 3000;
 
 const app = express();
@@ -90,6 +82,7 @@ async function render(req, opts = {}) {
   const canvas = await renderCalendar(model, cfg, {
     controlUrl: controlUrl(req),
     battery: opts.battery,   // only ever a real, device-reported value
+    crisp: opts.crisp,       // device frame: bilevel text, no anti-alias mush
   });
   return { canvas, model };
 }
@@ -104,24 +97,11 @@ app.get("/frame.bin", async (req, res) => {
   saveStatus(status);
 
   try {
-    // Test-frame override: while data/testframe.bin exists, serve it verbatim and
-    // advertise NO firmware (0) so a test never triggers an OTA. Fully reversible —
-    // DELETE /api/testframe removes the file and the calendar returns.
-    if (existsSync(TESTFRAME_PATH)) {
-      const tf = readFileSync(TESTFRAME_PATH);
-      res.set("Content-Type", "application/octet-stream");
-      res.set("X-Sleep-Seconds", String(sleepSeconds));
-      res.set("X-FW-Version", "0");
-      res.set("Content-Length", String(tf.length));
-      res.send(tf);
-      console.log(`[device] served TEST frame (${tf.length} bytes)`);
-      return;
-    }
-
     // The device just reported its real battery. Render the day it's waking FOR
-    // (snapped past midnight so early clock-drift never shows yesterday).
+    // (snapped past midnight so early clock-drift never shows yesterday). The
+    // device frame uses crisp 1-bit text (no anti-alias) for the panel.
     const renderDate = deviceRenderDate(cfg);
-    const { canvas, model } = await render(req, { battery, date: renderDate });
+    const { canvas, model } = await render(req, { battery, date: renderDate, crisp: true });
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
     const fb = packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", "application/octet-stream");
@@ -263,59 +243,6 @@ app.post("/api/telegram/test", async (_req, res) => {
 });
 
 app.get("/api/status", (_req, res) => res.json(status));
-
-// ---- sharp-image test (fully reversible) ----
-// POST stages a sharp test card as the device's next frame; DELETE rolls it back
-// to the live calendar. The device shows the change on its next wake — press RST
-// to see it immediately. Nothing about normal rendering changes while inactive.
-app.post("/api/testframe", async (req, res) => {
-  try {
-    const cfg = loadConfig();
-    // The REAL calendar, rendered supersampled and downsampled with a threshold —
-    // same layout, sharper text — so you can judge sharpness on the actual panel.
-    const model = await buildModel(cfg, deviceRenderDate(cfg));
-    const big = await renderCalendar(model, cfg, {
-      controlUrl: controlUrl(req), battery: status.battery ?? undefined, scale: SHARP_SCALE,
-    });
-    const rgba = big.getContext("2d").getImageData(0, 0, big.width, big.height).data;
-    const fb = packSupersampled(rgba, SHARP_SCALE, cfg.rotate || 0);
-    const dir = join(__dirname, "..", "data");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(TESTFRAME_PATH, fb);
-    console.log(`[testframe] staged sharp calendar ${SHARP_SCALE}x (${fb.length} bytes)`);
-    res.json({ ok: true, active: true, bytes: fb.length });
-  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
-});
-
-app.delete("/api/testframe", (_req, res) => {
-  try { if (existsSync(TESTFRAME_PATH)) rmSync(TESTFRAME_PATH); }
-  catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
-  console.log("[testframe] cleared — back to the live calendar");
-  res.json({ ok: true, active: false });
-});
-
-app.get("/api/testframe", (_req, res) => res.json({ active: existsSync(TESTFRAME_PATH) }));
-
-// Browser preview of the SHARP calendar (supersampled -> snapped to 6 colours).
-// Judge on the panel, not here — the browser rescales this and adds its own blur.
-app.get("/testframe.png", async (req, res) => {
-  try {
-    const cfg = loadConfig();
-    const model = await buildModel(cfg, deviceRenderDate(cfg));
-    const big = await renderCalendar(model, cfg, {
-      controlUrl: controlUrl(req), battery: status.battery ?? undefined, scale: SHARP_SCALE,
-    });
-    const rgba = big.getContext("2d").getImageData(0, 0, big.width, big.height).data;
-    const prev = previewSupersampled(rgba, SHARP_SCALE);
-    const cv = createCanvas(WIDTH, HEIGHT);
-    const ctx = cv.getContext("2d");
-    const id = ctx.createImageData(WIDTH, HEIGHT);
-    id.data.set(prev);
-    ctx.putImageData(id, 0, 0);
-    const png = await cv.encode("png");
-    res.set("Content-Type", "image/png"); res.set("Cache-Control", "no-store"); res.send(png);
-  } catch (e) { console.error(e); res.status(500).send("render error"); }
-});
 
 // Discover the distinct event titles in a feed so the UI can map each one
 // (no keyword guessing). Pass ?url=...&name=...

@@ -124,16 +124,6 @@
       <div class="status" id="deviceStatus">noch kein Kontakt</div>
     </div>
 
-    <div class="card">
-      <h2>Schärfe-Test</h2>
-      <p class="hint">Sendet den <b>echten Kalender</b>, schärfer gerendert (gleiches Layout, echte Schrift, nur Schwarz/Weiß + die 6 Farben — keine Graustufen), an das Gerät. Am Gerät <b>RST</b> drücken, um ihn sofort zu sehen und mit dem normalen zu vergleichen. „Zurücksetzen“ stellt den normalen Kalender wieder her.</p>
-      <div style="margin-top:10px">
-        <button class="ghost" onclick="sendTestframe()">Scharfen Kalender senden</button>
-        <button class="danger" onclick="clearTestframe()">Zurücksetzen</button>
-      </div>
-      <div class="status" id="testframeStatus" style="margin-top:8px"></div>
-      <div style="margin-top:10px"><a href="/testframe.png" target="_blank" style="color:#7aa2f7;font-size:13px">Testbild-Vorschau öffnen ↗</a></div>
-    </div>
   </div>
 
   <div class="preview">
@@ -170,7 +160,7 @@ async function load(){
   const bt = cfg.battery || {};
   document.getElementById("batWarn").value = bt.warnPercent ?? 20;
   document.getElementById("batOta").value = bt.otaMinPercent ?? 35;
-  renderFeeds(); renderLocations(); renderQuotes(); renderShades(); renderToggles(); loadStatus(); loadTestframe();
+  renderFeeds(); renderLocations(); renderQuotes(); renderShades(); renderToggles(); loadStatus();
 }
 
 function renderLocations(){
@@ -398,26 +388,6 @@ async function testTelegram(){
     if(!r.ok||!d.ok) throw new Error(d.error||("HTTP "+r.status));
     if(t){t.textContent="Test gesendet ✓";setTimeout(()=>{if(t)t.style.opacity="0";},1800);}
   }catch(e){ if(t){t.textContent="Telegram-Fehler: "+e.message;} }
-}
-// --- Sharp-image test (reversible) ---
-async function loadTestframe(){
-  try{
-    const s=await (await fetch("/api/testframe")).json();
-    const el=document.getElementById("testframeStatus");
-    if(el) el.innerHTML = s.active
-      ? "🟡 <b>Testbild aktiv</b> — Gerät zeigt das Testbild. RST am Gerät zum Anzeigen."
-      : "⚪ Normaler Kalender aktiv.";
-  }catch{}
-}
-async function sendTestframe(){
-  const el=document.getElementById("testframeStatus"); if(el) el.textContent="Sende Testbild…";
-  try{ const r=await fetch("/api/testframe",{method:"POST"}); if(!r.ok) throw new Error("HTTP "+r.status); await loadTestframe(); }
-  catch(e){ if(el) el.textContent="Fehler: "+e.message; }
-}
-async function clearTestframe(){
-  const el=document.getElementById("testframeStatus"); if(el) el.textContent="Setze zurück…";
-  try{ const r=await fetch("/api/testframe",{method:"DELETE"}); if(!r.ok) throw new Error("HTTP "+r.status); await loadTestframe(); }
-  catch(e){ if(el) el.textContent="Fehler: "+e.message; }
 }
 // Auto-save: any edit saves (debounced) and re-renders — no need to click Speichern.
 let _saveTimer=null;
