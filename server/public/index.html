@@ -310,7 +310,7 @@ async function loadStatus(){
     const wake = s.lastSleepSeconds ? new Date(new Date(s.lastSeen).getTime()+s.lastSleepSeconds*1000)
                    .toLocaleString("de-DE",{weekday:'short',hour:'2-digit',minute:'2-digit'}) : '?';
     if(b) b.textContent=`Gerät zuletzt: ${dt}`;
-    if(ds) ds.innerHTML=`Zuletzt gesehen: <b>${dt}</b><br>Batterie: <b>${pct}</b><br>Weckgrund: <b>${s.wakeReason??'?'}</b><br>Nächstes Wecken: <b>${wake}</b><br>Updates gesamt: <b>${s.count??0}</b>`;
+    if(ds) ds.innerHTML=`Zuletzt gesehen: <b>${dt}</b><br>Firmware: <b>v${s.deviceFw??'?'}</b><br>Batterie: <b>${pct}</b><br>Weckgrund: <b>${s.wakeReason??'?'}</b><br>Nächstes Wecken: <b>${wake}</b><br>Updates gesamt: <b>${s.count??0}</b>`;
   } else { if(b) b.textContent="noch kein Gerätekontakt"; }
 }
 
