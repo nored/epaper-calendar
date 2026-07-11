@@ -95,17 +95,61 @@ const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 // Format the daily digest. events is today's event list (each { title }); pct is
 // battery 0..100 (or null if unknown); volts is the reported voltage (or null);
 // warn/otaBlocked come from the battery thresholds evaluated in server.js.
-export function formatDailyDigest({ dateStr, events, pct, volts, warn, otaBlocked }) {
+export function formatDailyDigest({
+  dateStr, events,
+  publicHoliday, otherHoliday, schoolHoliday, nameDays, moon,
+  weather, quote, horoscopes,
+  pct, volts, warn, otaBlocked,
+}) {
   const lines = [`📅 <b>${esc(dateStr)}</b>`, ""];
 
+  // Termine
   if (events && events.length) {
     lines.push("<b>Termine heute:</b>");
     for (const e of events) lines.push(`• ${esc(e.title || e.label || "Termin")}`);
   } else {
     lines.push("Keine Termine heute.");
   }
-  lines.push("");
 
+  // Tag-Infos: Feiertag / Ferien / Namenstag / Mond
+  const day = [];
+  if (publicHoliday) day.push(`🎉 Feiertag: <b>${esc(publicHoliday.name)}</b>`);
+  if (otherHoliday) {
+    const where = otherHoliday.stateNames?.length ? ` (${esc(otherHoliday.stateNames.join(", "))})` : "";
+    day.push(`📌 Feiertag${where}: ${esc(otherHoliday.name)}`);
+  }
+  if (schoolHoliday) day.push(`🏖️ Ferien: ${esc(schoolHoliday)}`);
+  if (nameDays && nameDays.length) day.push(`👤 Namenstag: ${esc(nameDays.join(", "))}`);
+  if (moon && moon.name) day.push(`🌙 Mond: ${esc(moon.name)}`);
+  if (day.length) { lines.push(""); lines.push(...day); }
+
+  // Wetter heute (first day of each location's forecast is today)
+  if (weather && weather.length) {
+    lines.push("", "🌤️ <b>Wetter heute:</b>");
+    for (const loc of weather) {
+      const d = loc.days && loc.days[0];
+      if (!d) continue;
+      const cond = d.label ? ` – ${esc(d.label)}` : "";
+      lines.push(`• ${esc(loc.name)}: <b>${d.tmax}°</b> / ${d.tmin}°${cond}`);
+    }
+  }
+
+  // Spruch des Tages
+  if (quote && quote.text) {
+    lines.push("", `✨ <i>„${esc(quote.text)}“</i>${quote.author ? ` — ${esc(quote.author)}` : ""}`);
+  }
+
+  // Horoskop (per configured sign)
+  if (horoscopes && horoscopes.length) {
+    lines.push("", "🔮 <b>Horoskop:</b>");
+    for (const h of horoscopes) {
+      const lbl = h.label ? ` (${esc(h.label)})` : "";
+      lines.push(`<b>${esc(h.signName || h.sign)}</b>${lbl}: ${esc(h.text)}`);
+    }
+  }
+
+  // Batterie
+  lines.push("");
   if (pct != null) {
     const v = volts != null ? ` (${volts.toFixed(2)} V)` : "";
     lines.push(`🔋 Batterie: <b>${pct}%</b>${v}`);

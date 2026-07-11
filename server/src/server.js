@@ -290,6 +290,7 @@ function scheduleWarm() {
 async function buildDigestMessage(cfg) {
   const model = await buildModel(cfg, new Date());
   const ti = model.dayInfo(model.today);
+  const info = model.info; // today's holiday/nameday/moon/weather/quote/horoscope
   const events = ti.events || [];
   const volts = status.battery ?? null;
   const pct = volts != null ? lipoPercent(volts) : null;
@@ -299,7 +300,19 @@ async function buildDigestMessage(cfg) {
   const dateStr = model.today.toLocaleDateString("de-DE", {
     weekday: "long", day: "2-digit", month: "long", year: "numeric",
   });
-  return { message: formatDailyDigest({ dateStr, events, pct, volts, warn, otaBlocked }), events, pct, key: ti.key };
+  const message = formatDailyDigest({
+    dateStr, events,
+    publicHoliday: info.publicHoliday,
+    otherHoliday: ti.otherHoliday,
+    schoolHoliday: info.schoolHoliday,
+    nameDays: info.nameDays,
+    moon: cfg.show?.moon !== false ? info.moon : null,
+    weather: info.weather,
+    quote: info.quote,
+    horoscopes: info.horoscopes,
+    pct, volts, warn, otaBlocked,
+  });
+  return { message, events, pct, key: ti.key };
 }
 
 async function telegramTick() {
