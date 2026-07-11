@@ -96,6 +96,52 @@ export function snapRGBAToPanel(data) {
 // `rotate` (0 or 180) flips the image to match the panel's mounting / cable side.
 // The layout is fixed at 1200x1600, so only 0/180 make sense here; mounting it
 // as landscape would need a separate landscape layout, not a pixel rotation.
+// Downsample an S×-supersampled RGBA (from renderCalendar with opts.scale=S) to
+// the 1× panel framebuffer: average each S×S block, then quantize. Sharper bilevel
+// text than quantizing a 1× render — edge coverage comes from S² samples.
+export function packSupersampled(rgba, S, rotate = 0) {
+  const bigW = WIDTH * S;
+  const out = Buffer.alloc(FRAME_BYTES, 0x11);
+  const flip = rotate === 180;
+  const n = S * S;
+  const nib = (x, y) => {
+    const sx = flip ? WIDTH - 1 - x : x;
+    const sy = flip ? HEIGHT - 1 - y : y;
+    let r = 0, g = 0, b = 0;
+    for (let dy = 0; dy < S; dy++) {
+      let i = ((sy * S + dy) * bigW + sx * S) * 4;
+      for (let dx = 0; dx < S; dx++, i += 4) { r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; }
+    }
+    return nearestNibble((r / n) | 0, (g / n) | 0, (b / n) | 0);
+  };
+  for (let y = 0; y < HEIGHT; y++) {
+    const rowOff = y * ROW_BYTES;
+    for (let x = 0; x < WIDTH; x += 2) out[rowOff + (x >> 1)] = (nib(x, y) << 4) | nib(x + 1, y);
+  }
+  return out;
+}
+
+// Same downsample, but returns a 1200x1600 RGBA (snapped to panel colours) for the
+// browser preview — no rotation, so the preview reads upright.
+export function previewSupersampled(rgba, S) {
+  const bigW = WIDTH * S;
+  const n = S * S;
+  const out = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      let r = 0, g = 0, b = 0;
+      for (let dy = 0; dy < S; dy++) {
+        let i = ((y * S + dy) * bigW + x * S) * 4;
+        for (let dx = 0; dx < S; dx++, i += 4) { r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2]; }
+      }
+      const rgb = CODE_RGB[nearestNibble((r / n) | 0, (g / n) | 0, (b / n) | 0)];
+      const o = (y * WIDTH + x) * 4;
+      out[o] = rgb[0]; out[o + 1] = rgb[1]; out[o + 2] = rgb[2]; out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
 export function packFramebuffer(rgba, rotate = 0) {
   const out = Buffer.alloc(FRAME_BYTES, 0x11); // default all-white
   const flip = rotate === 180;

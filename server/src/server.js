@@ -8,11 +8,15 @@ import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
 import { renderCalendar, lipoPercent } from "./render.js";
-import { packFramebuffer, snapRGBAToPanel } from "./palette.js";
+import { packFramebuffer, snapRGBAToPanel, packSupersampled, previewSupersampled, WIDTH, HEIGHT } from "./palette.js";
+import { createCanvas } from "@napi-rs/canvas";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
 import { sendTelegram, formatDailyDigest, telegramReady, normalizeTimes, decideNotification } from "./telegram.js";
-import { renderSharpTestCard } from "./testcard.js";
+
+// Supersample factor for the "sharp calendar" test: render the real calendar at
+// this scale, then downsample with a threshold for crisper bilevel text.
+const SHARP_SCALE = 3;
 import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -267,16 +271,21 @@ app.get("/api/status", (_req, res) => res.json(status));
 // POST stages a sharp test card as the device's next frame; DELETE rolls it back
 // to the live calendar. The device shows the change on its next wake — press RST
 // to see it immediately. Nothing about normal rendering changes while inactive.
-app.post("/api/testframe", async (_req, res) => {
+app.post("/api/testframe", async (req, res) => {
   try {
     const cfg = loadConfig();
-    const canvas = renderSharpTestCard();
-    const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
-    const fb = packFramebuffer(rgba, cfg.rotate || 0);
+    // The REAL calendar, rendered supersampled and downsampled with a threshold —
+    // same layout, sharper text — so you can judge sharpness on the actual panel.
+    const model = await buildModel(cfg, deviceRenderDate(cfg));
+    const big = await renderCalendar(model, cfg, {
+      controlUrl: controlUrl(req), battery: status.battery ?? undefined, scale: SHARP_SCALE,
+    });
+    const rgba = big.getContext("2d").getImageData(0, 0, big.width, big.height).data;
+    const fb = packSupersampled(rgba, SHARP_SCALE, cfg.rotate || 0);
     const dir = join(__dirname, "..", "data");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(TESTFRAME_PATH, fb);
-    console.log(`[testframe] staged (${fb.length} bytes) — device shows it on next wake`);
+    console.log(`[testframe] staged sharp calendar ${SHARP_SCALE}x (${fb.length} bytes)`);
     res.json({ ok: true, active: true, bytes: fb.length });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
@@ -290,14 +299,23 @@ app.delete("/api/testframe", (_req, res) => {
 
 app.get("/api/testframe", (_req, res) => res.json({ active: existsSync(TESTFRAME_PATH) }));
 
-// Browser preview of the sharp test card, snapped to the 6 panel colours (== glass).
-app.get("/testframe.png", async (_req, res) => {
+// Browser preview of the SHARP calendar (supersampled -> snapped to 6 colours).
+// Judge on the panel, not here — the browser rescales this and adds its own blur.
+app.get("/testframe.png", async (req, res) => {
   try {
-    const canvas = renderSharpTestCard();
-    const ctx = canvas.getContext("2d");
-    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    snapRGBAToPanel(id.data); ctx.putImageData(id, 0, 0);
-    const png = await canvas.encode("png");
+    const cfg = loadConfig();
+    const model = await buildModel(cfg, deviceRenderDate(cfg));
+    const big = await renderCalendar(model, cfg, {
+      controlUrl: controlUrl(req), battery: status.battery ?? undefined, scale: SHARP_SCALE,
+    });
+    const rgba = big.getContext("2d").getImageData(0, 0, big.width, big.height).data;
+    const prev = previewSupersampled(rgba, SHARP_SCALE);
+    const cv = createCanvas(WIDTH, HEIGHT);
+    const ctx = cv.getContext("2d");
+    const id = ctx.createImageData(WIDTH, HEIGHT);
+    id.data.set(prev);
+    ctx.putImageData(id, 0, 0);
+    const png = await cv.encode("png");
     res.set("Content-Type", "image/png"); res.set("Cache-Control", "no-store"); res.send(png);
   } catch (e) { console.error(e); res.status(500).send("render error"); }
 });
