@@ -10,7 +10,7 @@ import { buildModel } from "./data.js";
 import { renderCalendar } from "./render.js";
 import { packFramebuffer, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
-import { latestFirmware } from "./firmware.js";
+import { latestFirmware, syncFirmwareFromGitHub } from "./firmware.js";
 import { createReadStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -212,6 +212,12 @@ function scheduleWarm() {
       await buildModel(cfg, day);
       console.log(`[prewarm] caches primed for ${dateDE(day)}`);
     } catch (e) { console.error("[prewarm] failed:", e.message); }
+    // Stage the latest GitHub-release firmware now, before the device wakes, so
+    // it OTAs the new build on this same wake (no GitHub call on its path).
+    try {
+      const r = await syncFirmwareFromGitHub();
+      if (r.updated) console.log(`[prewarm] firmware advanced to v${r.version}`);
+    } catch (e) { console.error("[prewarm] firmware sync failed:", e.message); }
     scheduleWarm(); // reschedule for the next boundary
   }, wait);
 }
@@ -221,4 +227,9 @@ app.listen(PORT, () => {
   console.log(`  device fetches:  GET /frame.bin?batt=<volts>&reason=<wake>`);
   console.log(`  control panel:   http://localhost:${PORT}/`);
   scheduleWarm();
+  // Pull the latest GitHub release once at boot so a fresh deploy/restart has
+  // firmware staged without waiting for the next pre-wake window.
+  syncFirmwareFromGitHub()
+    .then((r) => { if (r.updated) console.log(`[firmware] boot sync -> v${r.version}`); })
+    .catch(() => {});
 });
