@@ -90,10 +90,11 @@ async function render(req, opts = {}) {
 // ---- device endpoint: packed 6-color framebuffer ----
 app.get("/frame.bin", async (req, res) => {
   const battery = req.query.batt ? parseFloat(req.query.batt) : null;
+  const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0; // build the device is RUNNING
   const cfg = loadConfig();
   const sleepSeconds = secondsUntilWake(cfg, battery);
 
-  status = { lastSeen: new Date().toISOString(), battery, wakeReason: req.query.reason || null, lastSleepSeconds: sleepSeconds, count: (status.count || 0) + 1 };
+  status = { lastSeen: new Date().toISOString(), battery, deviceFw, wakeReason: req.query.reason || null, lastSleepSeconds: sleepSeconds, count: (status.count || 0) + 1 };
   saveStatus(status);
 
   try {
@@ -105,9 +106,7 @@ app.get("/frame.bin", async (req, res) => {
     const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
 
     // Firmware >= 4 renders on-device with Waveshare's GUI_ReadBmp_RGB_6Color, so it
-    // fetches a 24-bit BMP; older firmware gets the packed framebuffer. The device
-    // reports its build via ?fw=N.
-    const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0;
+    // fetches a 24-bit BMP; older firmware gets the packed framebuffer.
     const useBmp = deviceFw >= 4;
     const fb = useBmp ? packBMP6Color(rgba, cfg.rotate || 0) : packFramebuffer(rgba, cfg.rotate || 0);
     res.set("Content-Type", useBmp ? "image/bmp" : "application/octet-stream");
@@ -127,7 +126,7 @@ app.get("/frame.bin", async (req, res) => {
 
     res.set("Content-Length", String(fb.length));
     res.send(fb);
-    console.log(`[device] served frame.bin batt=${battery ?? "?"}V -> sleep ${sleepSeconds}s`);
+    console.log(`[device] served frame.bin fw=${deviceFw} ${useBmp ? "BMP" : "raw"} batt=${battery ?? "?"}V -> sleep ${sleepSeconds}s`);
     // Telegram is driven by its own scheduler (below), not the device fetch — but
     // this fetch just refreshed status.battery, which the next tick will use.
   } catch (e) {
