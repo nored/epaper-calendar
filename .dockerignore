@@ -1,0 +1,27 @@
+# Build context is the repo root (docker-compose.yml builds server/Dockerfile from
+# here), so this file — not server/.dockerignore — governs what Docker sees.
+# Keep the context lean and the firmware/server layer caches stable.
+
+.git
+.claude/
+
+# Node modules are rebuilt inside the image for its own OS/CPU; shipping the dev
+# machine's would install the wrong native canvas binary.
+node_modules/
+server/node_modules/
+
+# Runtime state belongs on the mounted volume, not in the image.
+server/data/
+
+# Firmware build artifacts / caches — the image compiles fresh from source.
+firmware/.pio/
+firmware/dist/
+
+# Web-flasher output and the vendored Waveshare reference clone: not needed to
+# build the server image.
+webflash/
+reference-code-repo/
+
+# Misc
+npm-debug.log
+.DS_Store

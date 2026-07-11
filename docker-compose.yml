@@ -1,9 +1,17 @@
 # Portainer Stack for the e-paper calendar server.
 # In Portainer: Stacks -> Add stack -> Repository, point "Compose path" at this
 # file. Portainer builds the image from server/Dockerfile and runs it.
+#
+# The build context is the repo root (not ./server) because server/Dockerfile is
+# multi-stage: it compiles the ESP32 firmware from firmware/ and bakes the OTA
+# image into the server, so a push to main ships new firmware to the device with
+# no extra step. Still a single service — the firmware-builder in
+# docker-compose.build.yml is unrelated and untouched.
 services:
   epaper-calendar:
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     image: epaper-calendar:latest
     container_name: epaper-calendar
     restart: unless-stopped
