@@ -22,6 +22,7 @@
 #include <esp_wifi.h>
 #include <esp_system.h>
 #include <driver/gpio.h>
+#include <Wire.h>          // I2C to the on-board audio codecs (to power them down)
 #include <time.h>
 #include <sys/time.h>
 
@@ -39,7 +40,7 @@
 // Bumped on every firmware change; the server advertises the latest via the
 // X-FW-Version header. OTA triggers on version MISMATCH (not just ">"), so a git
 // rollback that lowers this number cleanly downgrades the device on its next wake.
-#define FW_VERSION 7
+#define FW_VERSION 8
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
 // Incoming 24-bit BMP: 54-byte header + 1200*1600*3 bytes of pixel data, + slack.
@@ -48,6 +49,17 @@
 #define WIFI_TIMEOUT_MS 20000
 #define FAIL_RETRY_SECONDS 3600        // if anything fails, retry in 1 h
 #define PROV_BAUD 115200
+
+// This is a Waveshare AIoT board: an ES7210 mic-ADC (~19 mA in its default running
+// state) and an ES8311 codec sit on the ALWAYS-ON 3V3 rail (shared with the CPU —
+// there is no power-gate GPIO for them). Nothing here uses audio, so both are forced
+// to power-down every wake; the ES7210 drops from ~19 mA to ~10 µA. This is the daily
+// battery drain. I2C: SDA=GPIO41, SCL=GPIO42. Speaker-amp enable (NS4150) = GPIO13.
+#define AUDIO_SDA_PIN     41
+#define AUDIO_SCL_PIN     42
+#define AUDIO_PA_CTRL_PIN 13
+#define ES8311_I2C_ADDR   0x18
+#define ES7210_I2C_ADDR   0x40
 
 // ---- exact-midnight wake (NTP-disciplined deep-sleep timer) ----
 #define WAKE_TARGET_HOUR 0             // refresh at local midnight
@@ -79,6 +91,46 @@ static float readBatteryVolts() {
   for (int i = 0; i < 8; i++) mv += analogReadMilliVolts(BATT_ADC_PIN);
   mv /= 8;
   return (mv * 3.0f) / 1000.0f;   // x3 hardware divider, calibrated mV
+}
+
+static bool i2cWrite(uint8_t addr, uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(val);
+  return Wire.endTransmission() == 0;
+}
+
+// Force the ES8311 codec and ES7210 mic-ADC into power-down over I2C. They live on
+// the always-on 3V3 rail (no load switch), so this is the only way to stop them
+// draining the battery ~24 h/day. Register state persists while powered, so once
+// down they stay down through our deep sleep. Called every wake (covers first boot
+// and battery reconnect); ~22 register writes, a few ms.
+static void powerDownAudioCodecs() {
+  pinMode(AUDIO_PA_CTRL_PIN, OUTPUT);
+  digitalWrite(AUDIO_PA_CTRL_PIN, LOW);        // speaker amp (NS4150) disabled
+
+  Wire.begin(AUDIO_SDA_PIN, AUDIO_SCL_PIN, 100000);
+
+  // ES8311 suspend sequence (Everest/Espressif es8311_suspend).
+  static const uint8_t es8311[][2] = {
+    {0x32,0x00},{0x17,0x00},{0x0E,0xFF},{0x12,0x02},{0x14,0x00},
+    {0x0D,0xFA},{0x15,0x00},{0x37,0x08},{0x45,0x01},{0x00,0x00},
+  };
+  bool ok8311 = true;
+  for (auto &r : es8311) ok8311 &= i2cWrite(ES8311_I2C_ADDR, r[0], r[1]);
+
+  // ES7210 power-down: reset, then kill every mic channel + bias + analog + clock.
+  static const uint8_t es7210[][2] = {
+    {0x00,0xFF},{0x4B,0xFF},{0x4C,0xFF},
+    {0x47,0xFF},{0x48,0xFF},{0x49,0xFF},{0x4A,0xFF},
+    {0x41,0x70},{0x42,0x70},{0x40,0xC0},{0x06,0x07},{0x01,0x7F},
+  };
+  bool ok7210 = true;
+  for (auto &r : es7210) ok7210 &= i2cWrite(ES7210_I2C_ADDR, r[0], r[1]);
+
+  Wire.end();
+  Serial.printf("Audio power-down: ES8311 %s, ES7210 %s\n",
+                ok8311 ? "ok" : "NO-ACK", ok7210 ? "ok" : "NO-ACK");
 }
 
 static const char* wakeReason() {
@@ -394,6 +446,10 @@ void setup() {
 
   float volts = readBatteryVolts();
   Serial.printf("Battery: %.2f V\n", volts);
+
+  // Kill the always-on audio-codec drain first, so every exit path (incl. WiFi/fetch
+  // failure -> failSleep) leaves the board in its low-power state.
+  powerDownAudioCodecs();
 
   uint8_t* frame  = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
   uint8_t* bmpBuf = (uint8_t*)heap_caps_malloc(BMP_MAX, MALLOC_CAP_SPIRAM);
