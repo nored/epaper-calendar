@@ -152,6 +152,11 @@ UBYTE GUI_ReadBmp_RGB_6Color(const char *path, UWORD Xstart, UWORD Ystart)
 // In-memory version of GUI_ReadBmp_RGB_6Color — identical exact-colour matching as
 // the original Waveshare reader, just from the HTTP-downloaded buffer instead of an
 // SD file. The server sends the six exact RGBs matched below.
+// Returns 1 on a fully-decoded frame, 0 on any failure (bad header, non-24bpp,
+// or truncated pixel stream). The caller MUST NOT drive the panel on 0: the
+// frame buffer is partly or wholly WHITE from Paint_Clear(), and painting it
+// would blank or half-blank the display (BMP rows are stored bottom-up, so a
+// truncation leaves the TOP of the image white — the "lower part only" symptom).
 UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, UWORD Ystart)
 {
     if (data == NULL || len < sizeof(BMPFILEHEADER) + sizeof(BMPINFOHEADER)) {
@@ -179,7 +184,11 @@ UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, U
     UBYTE color = 6;
     for (UDOUBLE y = 0; y < bmpInfoHeader.biHeight; y++) {
         for (UDOUBLE x = 0; x < bmpInfoHeader.biWidth; x++) {
-            if (p + 3 > end) return 0;
+            if (p + 3 > end) {
+                printf("BMP truncated at row %lu col %lu\n",
+                       (unsigned long)y, (unsigned long)x);
+                return 0;
+            }
             Rdata[0] = *p++; Rdata[1] = *p++; Rdata[2] = *p++;
             // Exact-colour match, identical to Waveshare's GUI_ReadBmp_RGB_6Color.
             if      (Rdata[0] == 0   && Rdata[1] == 0   && Rdata[2] == 0)   color = 0; // Black
@@ -193,6 +202,6 @@ UBYTE GUI_ReadBmp_RGB_6Color_buf(const UBYTE *data, UDOUBLE len, UWORD Xstart, U
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    return 0;
+    return 1;
 }
 

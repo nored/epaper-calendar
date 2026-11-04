@@ -87,11 +87,11 @@ export const DEFAULT_CONFIG = {
   quotes: [],
 
   // Sleep scheduling the device honors via the X-Sleep-Seconds response header.
+  // No battery-based backoff — the daily display refresh always runs. OTA is
+  // gated separately by battery.otaMinPercent (brownout safety during flash).
   sleep: {
     wakeHour: 0, // refresh at midnight (fixed; not user-configurable)
     minSeconds: 3600, // never sleep less than this
-    lowBatteryVolts: 3.5, // below this, back off updates
-    lowBatterySeconds: 172800, // 48h between updates when battery is low
   },
 
   // Battery thresholds (percent of the discharge curve, 0..100). warnPercent

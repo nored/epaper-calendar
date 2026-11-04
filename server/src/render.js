@@ -326,6 +326,41 @@ function drawLegend(ctx, model, y) {
   }
 }
 
+// A deliberately minimal 1200x1600 splash shown on the panel while the device
+// is downloading an OTA. The device fetches this (BMP, same pipeline as the
+// calendar) and paints it before stageOTA(), so a reset-triggered firmware
+// update isn't ~30-60 s of unexplained black screen. Pure 6-colour inks only.
+export function renderFirmwareUpdateSplash(fromVersion, toVersion) {
+  const canvas = createCanvas(WIDTH, HEIGHT);
+  const ctx = canvas.getContext("2d");
+  installPXFont(ctx);
+  ctx.antialias = "none";
+  ctx.fillStyle = C.white;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "center";
+  const cx = WIDTH / 2;
+
+  ctx.fillStyle = C.red;
+  ctx.font = "bold 96px SansBold";
+  ctx.fillText("Firmware-Update", cx, HEIGHT / 2 - 160);
+
+  ctx.fillStyle = C.black;
+  ctx.font = "bold 160px SansBold";
+  const arrow = ` → `; // →
+  ctx.fillText(`v${fromVersion}${arrow}v${toVersion}`, cx, HEIGHT / 2 + 40);
+
+  ctx.font = "48px Sans";
+  ctx.fillText("Bitte warten...", cx, HEIGHT / 2 + 180);
+
+  ctx.font = "28px Sans";
+  ctx.fillStyle = C.black;
+  ctx.fillText("Das Gerät startet nach dem Download neu.", cx, HEIGHT / 2 + 260);
+
+  return canvas;
+}
+
 export async function renderCalendar(model, cfg, opts = {}) {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");

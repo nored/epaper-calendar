@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync, mkdirSync, statSync } from "node:fs";
 import { loadConfig, saveConfig, DEFAULT_CONFIG } from "./config.js";
 import { buildModel } from "./data.js";
-import { renderCalendar, lipoPercent } from "./render.js";
+import { renderCalendar, renderFirmwareUpdateSplash, lipoPercent } from "./render.js";
 import { packFramebuffer, packBMP6Color, snapRGBAToPanel } from "./palette.js";
 import { feedTitles } from "./events.js";
 import { latestFirmware } from "./firmware.js";
@@ -39,10 +39,11 @@ function loadNotify() {
 }
 function saveNotify(n) { try { writeFileSync(NOTIFY_PATH, JSON.stringify(n, null, 2)); } catch {} }
 
-// Seconds until the next configured wake hour (local time).
-function secondsUntilWake(cfg, battery) {
+// Seconds until the next configured wake hour (local time). The daily refresh
+// always runs — a low battery only gates OTA (see otaMinPercent), never the
+// display update, so plugging in a flat battery still gets the new day on screen.
+function secondsUntilWake(cfg) {
   const s = cfg.sleep || DEFAULT_CONFIG.sleep;
-  if (battery != null && battery < s.lowBatteryVolts) return s.lowBatterySeconds;
   const now = new Date();
   const next = nextWake(cfg, now);
   return Math.max(s.minSeconds, Math.round((next - now) / 1000));
@@ -97,7 +98,7 @@ async function serveDeviceFrame(req, res, { real }) {
   const battery = req.query.batt ? parseFloat(req.query.batt) : null;
   const deviceFw = req.query.fw ? parseInt(req.query.fw, 10) : 0; // build the device is RUNNING
   const cfg = loadConfig();
-  const sleepSeconds = secondsUntilWake(cfg, battery);
+  const sleepSeconds = secondsUntilWake(cfg);
 
   if (battery != null) { // only a real device (reports battery) updates status
     status = { lastSeen: new Date().toISOString(), battery, deviceFw, wakeReason: req.query.reason || null, lastSleepSeconds: sleepSeconds, count: (status.count || 0) + 1 };
@@ -138,6 +139,29 @@ async function serveDeviceFrame(req, res, { real }) {
 
 app.get("/frame.bmp", (req, res) => serveDeviceFrame(req, res, { real: true }));   // v6+: real smooth image, device converts
 app.get("/frame.bin", (req, res) => serveDeviceFrame(req, res, { real: false })); // legacy: v4 quantized BMP / older raw framebuffer
+
+// ---- firmware-update splash ----
+// The device fetches this just before starting the OTA download so the panel
+// doesn't look dead for the ~30-60 s a reset-triggered OTA takes. Rendered in
+// the same 6-colour BMP format the device already decodes.
+app.get("/firmware-splash.bmp", (req, res) => {
+  const from = parseInt(req.query.from, 10);
+  const to   = parseInt(req.query.to, 10);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return res.status(400).send("need from and to");
+  try {
+    const canvas = renderFirmwareUpdateSplash(from, to);
+    const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    const cfg = loadConfig();
+    const fb = packBMP6Color(rgba, cfg.rotate || 0, false);
+    res.set("Content-Type", "image/bmp");
+    res.set("Content-Length", String(fb.length));
+    res.send(fb);
+    console.log(`[device] served firmware-splash v${from} -> v${to}`);
+  } catch (e) {
+    console.error("splash render failed:", e);
+    res.status(500).send("render error");
+  }
+});
 
 // ---- release endpoint: upload a new firmware build into the releases dir ----
 // You build the .bin on your PC and push it here; the device OTAs on its next

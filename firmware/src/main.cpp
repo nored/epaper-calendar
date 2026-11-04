@@ -22,7 +22,6 @@
 #include <esp_wifi.h>
 #include <esp_system.h>
 #include <driver/gpio.h>
-#include <Wire.h>          // I2C to the on-board audio codecs (to power them down)
 #include <time.h>
 #include <sys/time.h>
 
@@ -40,26 +39,20 @@
 // Bumped on every firmware change; the server advertises the latest via the
 // X-FW-Version header. OTA triggers on version MISMATCH (not just ">"), so a git
 // rollback that lowers this number cleanly downgrades the device on its next wake.
-#define FW_VERSION 8
+#define FW_VERSION 9
 
 #define FRAME_BYTES (600UL * 1600UL)   // 960000 — must match the panel framebuffer
 // Incoming 24-bit BMP: 54-byte header + 1200*1600*3 bytes of pixel data, + slack.
 #define BMP_MAX (1200UL * 1600UL * 3UL + 4096UL)
 #define BATT_ADC_PIN 8                 // ADC1_CH7, calibrated mV x3 (per Waveshare ADC example)
 #define WIFI_TIMEOUT_MS 20000
-#define FAIL_RETRY_SECONDS 3600        // if anything fails, retry in 1 h
+// Fail-retry schedule: 10 min after the first failure, then hourly until
+// something succeeds. Keeps the screen showing yesterday's content (good) and
+// still gets the new day on panel within an hour or so of the network coming
+// back. On the eventual success we go straight back to the midnight schedule.
+#define FAIL_FIRST_SECONDS 600
+#define FAIL_RETRY_SECONDS 3600
 #define PROV_BAUD 115200
-
-// This is a Waveshare AIoT board: an ES7210 mic-ADC (~19 mA in its default running
-// state) and an ES8311 codec sit on the ALWAYS-ON 3V3 rail (shared with the CPU —
-// there is no power-gate GPIO for them). Nothing here uses audio, so both are forced
-// to power-down every wake; the ES7210 drops from ~19 mA to ~10 µA. This is the daily
-// battery drain. I2C: SDA=GPIO41, SCL=GPIO42. Speaker-amp enable (NS4150) = GPIO13.
-#define AUDIO_SDA_PIN     41
-#define AUDIO_SCL_PIN     42
-#define AUDIO_PA_CTRL_PIN 13
-#define ES8311_I2C_ADDR   0x18
-#define ES7210_I2C_ADDR   0x40
 
 // ---- exact-midnight wake (NTP-disciplined deep-sleep timer) ----
 #define WAKE_TARGET_HOUR 0             // refresh at local midnight
@@ -67,7 +60,10 @@
 // Wake EXACTLY at local midnight — no lead time. The device is awake only to run
 // one update (WiFi + NTP + fetch + panel refresh), so the new day lands on screen
 // shortly after 00:00, then it sleeps straight back to the next midnight.
-#define LOW_BATT_VOLTS 3.5f           // below this, honor the server's backoff instead
+// NB: no low-battery backoff on display refresh — a flat/charging battery can
+// read low (and the ADC stays stale between wakes after deep sleep), so skipping
+// the daily update would strand the screen on an old frame after a recharge.
+// OTA is still battery-gated server-side; the display refresh is not.
 
 // Persisted across deep sleep for fast WiFi reconnect.
 RTC_DATA_ATTR static uint8_t  rtcBssid[6];
@@ -91,46 +87,6 @@ static float readBatteryVolts() {
   for (int i = 0; i < 8; i++) mv += analogReadMilliVolts(BATT_ADC_PIN);
   mv /= 8;
   return (mv * 3.0f) / 1000.0f;   // x3 hardware divider, calibrated mV
-}
-
-static bool i2cWrite(uint8_t addr, uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(val);
-  return Wire.endTransmission() == 0;
-}
-
-// Force the ES8311 codec and ES7210 mic-ADC into power-down over I2C. They live on
-// the always-on 3V3 rail (no load switch), so this is the only way to stop them
-// draining the battery ~24 h/day. Register state persists while powered, so once
-// down they stay down through our deep sleep. Called every wake (covers first boot
-// and battery reconnect); ~22 register writes, a few ms.
-static void powerDownAudioCodecs() {
-  pinMode(AUDIO_PA_CTRL_PIN, OUTPUT);
-  digitalWrite(AUDIO_PA_CTRL_PIN, LOW);        // speaker amp (NS4150) disabled
-
-  Wire.begin(AUDIO_SDA_PIN, AUDIO_SCL_PIN, 100000);
-
-  // ES8311 suspend sequence (Everest/Espressif es8311_suspend).
-  static const uint8_t es8311[][2] = {
-    {0x32,0x00},{0x17,0x00},{0x0E,0xFF},{0x12,0x02},{0x14,0x00},
-    {0x0D,0xFA},{0x15,0x00},{0x37,0x08},{0x45,0x01},{0x00,0x00},
-  };
-  bool ok8311 = true;
-  for (auto &r : es8311) ok8311 &= i2cWrite(ES8311_I2C_ADDR, r[0], r[1]);
-
-  // ES7210 power-down: reset, then kill every mic channel + bias + analog + clock.
-  static const uint8_t es7210[][2] = {
-    {0x00,0xFF},{0x4B,0xFF},{0x4C,0xFF},
-    {0x47,0xFF},{0x48,0xFF},{0x49,0xFF},{0x4A,0xFF},
-    {0x41,0x70},{0x42,0x70},{0x40,0xC0},{0x06,0x07},{0x01,0x7F},
-  };
-  bool ok7210 = true;
-  for (auto &r : es7210) ok7210 &= i2cWrite(ES7210_I2C_ADDR, r[0], r[1]);
-
-  Wire.end();
-  Serial.printf("Audio power-down: ES8311 %s, ES7210 %s\n",
-                ok8311 ? "ok" : "NO-ACK", ok7210 ? "ok" : "NO-ACK");
 }
 
 static const char* wakeReason() {
@@ -167,13 +123,15 @@ static void deepSleep(uint64_t seconds) {
   esp_deep_sleep_start();
 }
 
-// Sleep after a failed wake, backing off exponentially (1h, 2h, 4h, capped 6h)
-// so a flaky server / marginal WiFi can't burn a full radio cycle every hour.
+// Sleep after a failed wake. First failure: 10 min. Every retry after: 1 h.
+// This path is hit on WiFi fail, HTTP fail, truncated download, or BMP-decode
+// fail — anywhere today's frame can't be put on the panel. The panel is left
+// alone (yesterday's image stays on screen) and we come back soon to retry.
+// A successful fetch+decode clears rtcFailStreak, so a sporadic failure
+// doesn't permanently stick us on the fast schedule.
 static void failSleep() {
   rtcFailStreak++;
-  uint32_t shift = rtcFailStreak > 3 ? 3 : (rtcFailStreak - 1);
-  uint32_t backoff = (uint32_t)FAIL_RETRY_SECONDS << shift; // 3600 << {0..3}
-  if (backoff > 6UL * 3600) backoff = 6UL * 3600;
+  uint32_t backoff = (rtcFailStreak == 1) ? FAIL_FIRST_SECONDS : FAIL_RETRY_SECONDS;
   Serial.printf("Fail #%lu — backoff %lu s\n", (unsigned long)rtcFailStreak, (unsigned long)backoff);
   deepSleep(backoff);
 }
@@ -314,11 +272,57 @@ static FetchResult fetchFrame(uint8_t* buf, uint32_t maxLen, float volts) {
   Serial.printf("Received %lu bytes in %lu ms, sleep=%ld, fw=%s\n",
                 (unsigned long)got, millis() - t0, sleepSecs, fwHdr.c_str());
   if (got < 54) return r; // too small to be a BMP
+  // Short read: the server told us the full Content-Length but the stream
+  // closed before we got it. Decoding this would leave the top of the frame
+  // WHITE (BMP rows are bottom-up) and paint half a screen. Treat as fail.
+  if (len > 0 && got != (uint32_t)len) {
+    Serial.printf("Truncated: got %lu / expected %d\n", (unsigned long)got, len);
+    return r;
+  }
   if (sleepSecs < 60) sleepSecs = 86400; // safety default: 1 day
   r.sleepSecs = sleepSecs;
   r.fwVersion = fwHdr.isEmpty() ? -1 : fwHdr.toInt();
   r.bytes = got;
   return r;
+}
+
+// Download the firmware-update splash BMP into `buf`. Returns the number of
+// bytes received on success, 0 on any failure. Same request shape as
+// fetchFrame so the panel-side decode path is identical.
+static uint32_t fetchSplash(uint8_t* buf, uint32_t maxLen, int fromVer, int toVer) {
+  HTTPClient http;
+  char url[256];
+  snprintf(url, sizeof(url), "%s/firmware-splash.bmp?from=%d&to=%d",
+           cfgBaseUrl.c_str(), fromVer, toVer);
+  Serial.printf("GET %s\n", url);
+  if (!http.begin(url)) return 0;
+  http.setTimeout(20000);
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) { Serial.printf("splash HTTP %d\n", code); http.end(); return 0; }
+
+  int len = http.getSize();
+  uint32_t cap = (len > 0 && (uint32_t)len <= maxLen) ? (uint32_t)len : maxLen;
+  WiFiClient* stream = http.getStreamPtr();
+  uint32_t got = 0;
+  uint32_t t0 = millis();
+  while (got < cap && (http.connected() || stream->available())) {
+    size_t avail = stream->available();
+    if (avail) {
+      int rd = stream->readBytes(buf + got, min(avail, (size_t)(cap - got)));
+      got += rd;
+    } else {
+      if (millis() - t0 > 20000) break;
+      delay(2);
+    }
+  }
+  http.end();
+  if (got < 54) { Serial.printf("splash too small (%lu)\n", (unsigned long)got); return 0; }
+  if (len > 0 && got != (uint32_t)len) {
+    Serial.printf("splash truncated %lu/%d\n", (unsigned long)got, len);
+    return 0;
+  }
+  Serial.printf("splash: %lu bytes\n", (unsigned long)got);
+  return got;
 }
 
 // Stage an OTA from <base>/firmware.bin. Stages the new image (sets boot
@@ -447,10 +451,6 @@ void setup() {
   float volts = readBatteryVolts();
   Serial.printf("Battery: %.2f V\n", volts);
 
-  // Kill the always-on audio-codec drain first, so every exit path (incl. WiFi/fetch
-  // failure -> failSleep) leaves the board in its low-power state.
-  powerDownAudioCodecs();
-
   uint8_t* frame  = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
   uint8_t* bmpBuf = (uint8_t*)heap_caps_malloc(BMP_MAX, MALLOC_CAP_SPIRAM);
   if (!frame || !bmpBuf) { Serial.println("PSRAM alloc failed!"); failSleep(); }
@@ -468,33 +468,76 @@ void setup() {
 
   // OTA piggybacks this same wake, while WiFi is still up. Trigger on any version
   // MISMATCH so a rollback (lower number) downgrades cleanly, not only upgrades.
-  bool otaStaged = false;
-  if (res.fwVersion > 0 && res.fwVersion != FW_VERSION) {
-    Serial.printf("Firmware change advertised (%ld != %d) — staging OTA\n", res.fwVersion, FW_VERSION);
-    otaStaged = stageOTA();
+  const bool otaWanted = (res.fwVersion > 0 && res.fwVersion != FW_VERSION);
+
+  // Manual-wake OTA path (self-contained — either reboots into the new firmware
+  // or fail-sleeps on OTA failure, never falls through to the calendar paint).
+  // Shows a "Updating firmware vN -> vM" splash on the panel BEFORE the OTA
+  // download so a reset-triggered update isn't ~30-60 s of unexplained blank
+  // screen. The splash overwrites bmpBuf — fine, this path exits via restart or
+  // failSleep and never re-reads bmpBuf. The new firmware renders the real
+  // calendar frame on its first wake.
+  if (otaWanted && manualWake) {
+    Serial.printf("Manual-wake OTA v%d -> %ld — splash + stage\n", FW_VERSION, res.fwVersion);
+    uint32_t splashBytes = fetchSplash(bmpBuf, BMP_MAX, FW_VERSION, (int)res.fwVersion);
+    if (splashBytes > 0) {
+      Paint_NewImage(frame, 1200, 1600, 0, EPD_13IN3E_WHITE);
+      Paint_SetScale(6);
+      Paint_SelectImage(frame);
+      Paint_Clear(EPD_13IN3E_WHITE);
+      if (GUI_ReadBmp_RGB_6Color_buf(bmpBuf, splashBytes, 0, 0)) {
+        setCpuFrequencyMhz(80);
+        showFrame(frame);
+        setCpuFrequencyMhz(240);   // restore for the OTA download
+      } else {
+        Serial.println("splash decode failed — skipping splash paint");
+      }
+    }
+
+    bool otaStaged = stageOTA();
+    WiFi.disconnect(true);
+    esp_wifi_stop();
+    if (otaStaged) {
+      Serial.println("OTA staged on manual wake — rebooting into new firmware now");
+      Serial.flush();
+      heap_caps_free(bmpBuf);
+      heap_caps_free(frame);
+      esp_restart();
+    }
+    Serial.println("OTA failed on manual wake — fail-sleep to retry");
+    heap_caps_free(bmpBuf);
+    heap_caps_free(frame);
+    failSleep();
+  }
+
+  // Midnight / non-manual OTA: no splash (nobody watching), stage silently, then
+  // paint the calendar with the outgoing firmware as before. OTA runs on the next
+  // wake automatically (bootloader loads the new partition).
+  if (otaWanted) {
+    stageOTA();
   }
 
   // WiFi off before the slow panel refresh to save power.
   WiFi.disconnect(true);
   esp_wifi_stop();
 
-  // On a manual wake (reset button), apply a just-staged OTA now: reboot straight
-  // into the new image rather than waiting for midnight. The new firmware redraws
-  // the panel itself, so skip the redundant refresh with the outgoing build.
-  if (otaStaged && manualWake) {
-    Serial.println("OTA staged on manual wake — rebooting into new firmware now");
-    Serial.flush();
-    esp_restart();
-  }
-
   // Decode the server's 24-bit BMP into the packed 6-colour framebuffer on-device,
   // with Waveshare's reader (Paint scale 6 = 4bpp, matching EPD_13IN3E_Display).
+  // On a decode failure the frame buffer is partly WHITE — painting it would
+  // blank or half-blank the display. Skip the panel refresh entirely and let
+  // failSleep() put us back here in 10 min (then hourly) to try a fresh fetch;
+  // the panel keeps yesterday's image until we have a good frame.
   Paint_NewImage(frame, 1200, 1600, 0, EPD_13IN3E_WHITE);
   Paint_SetScale(6);
   Paint_SelectImage(frame);
   Paint_Clear(EPD_13IN3E_WHITE);
-  GUI_ReadBmp_RGB_6Color_buf(bmpBuf, res.bytes, 0, 0);
+  bool decoded = GUI_ReadBmp_RGB_6Color_buf(bmpBuf, res.bytes, 0, 0) != 0;
   heap_caps_free(bmpBuf);
+  if (!decoded) {
+    Serial.println("BMP decode failed — skipping panel refresh, will retry");
+    heap_caps_free(frame);
+    failSleep();
+  }
 
   // Radio is off for the slow (~15-20 s) panel refresh — drop the CPU to 80 MHz
   // for it. SPI recomputes its divider per transaction so the 20 MHz panel clock
@@ -503,12 +546,11 @@ void setup() {
   showFrame(frame);
   heap_caps_free(frame);
 
-  // Low battery: honor the server's backoff (skip discipline). Otherwise, if we
-  // have real time, sleep to the disciplined midnight target; else trust the
-  // server's X-Sleep-Seconds.
-  if (volts > 0.1f && volts < LOW_BATT_VOLTS) deepSleep((uint64_t)res.sleepSecs);
-  else if (ntpOk)                             disciplinedSleep();
-  else                                        deepSleep((uint64_t)res.sleepSecs);
+  // If NTP synced, sleep to the disciplined local-midnight target; otherwise
+  // trust the server's X-Sleep-Seconds. The daily refresh runs regardless of
+  // battery — a plugged-in-but-charging pack must still get the new-day frame.
+  if (ntpOk) disciplinedSleep();
+  else       deepSleep((uint64_t)res.sleepSecs);
 }
 
 void loop() { /* never reached; everything happens in setup() then deep sleep */ }
