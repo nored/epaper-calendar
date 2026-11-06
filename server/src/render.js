@@ -326,10 +326,44 @@ function drawLegend(ctx, model, y) {
   }
 }
 
-// A deliberately minimal 1200x1600 splash shown on the panel while the device
-// is downloading an OTA. The device fetches this (BMP, same pipeline as the
-// calendar) and paints it before stageOTA(), so a reset-triggered firmware
-// update isn't ~30-60 s of unexplained black screen. Pure 6-colour inks only.
+// 1200x1600 splash shown on the panel while the device is downloading an OTA.
+// Design notes:
+//  - The on-device bitmap font (pxfont) caps at 36 px. Visual weight for the
+//    hero "vN -> vM" comes from rendering at 36 px into a scratch canvas then
+//    integer-scaling pixel-exact onto this one — no AA, no 6-colour halos.
+//  - "->" is drawn as geometry (bar + triangle head); the Unicode arrow has no
+//    glyph in the bitmap font and would print as "?".
+//  - Restrained palette: pure black on white, one small red accent (NEU badge).
+function drawBigText(mainCtx, text, cx, cy, scale, color) {
+  const base = 36;                                 // largest pxfont size
+  const scratch = createCanvas(1200, base + 24);
+  const sctx = scratch.getContext("2d");
+  installPXFont(sctx);
+  sctx.antialias = "none";
+  sctx.fillStyle = "#000";
+  sctx.textAlign = "left";
+  sctx.textBaseline = "top";
+  sctx.font = `bold ${base}px SansBold`;
+  sctx.fillText(text, 0, 0);
+  const w = Math.max(1, Math.round(sctx.measureText(text).width));
+  const h = base + 16;                              // room for descenders
+  const id = sctx.getImageData(0, 0, Math.min(w, scratch.width), h);
+  const ox = Math.round(cx - (w * scale) / 2);
+  const oy = Math.round(cy - (h * scale) / 2);
+  mainCtx.fillStyle = color;
+  for (let sy = 0; sy < h; sy++) {
+    let sx = 0;
+    while (sx < w) {
+      if (id.data[(sy * id.width + sx) * 4 + 3] > 0) {
+        let sx2 = sx + 1;
+        while (sx2 < w && id.data[(sy * id.width + sx2) * 4 + 3] > 0) sx2++;
+        mainCtx.fillRect(ox + sx * scale, oy + sy * scale, (sx2 - sx) * scale, scale);
+        sx = sx2;
+      } else sx++;
+    }
+  }
+}
+
 export function renderFirmwareUpdateSplash(fromVersion, toVersion) {
   const canvas = createCanvas(WIDTH, HEIGHT);
   const ctx = canvas.getContext("2d");
@@ -338,25 +372,88 @@ export function renderFirmwareUpdateSplash(fromVersion, toVersion) {
   ctx.fillStyle = C.white;
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
+  ctx.fillStyle = C.black;
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "center";
   const cx = WIDTH / 2;
 
-  ctx.fillStyle = C.red;
-  ctx.font = "bold 96px SansBold";
-  ctx.fillText("Firmware-Update", cx, HEIGHT / 2 - 160);
+  // Hollow rectangle drawn as four filled strips (keeps lines pixel-exact).
+  function strokeBox(x, y, w, h, t) {
+    ctx.fillRect(x, y, w, t);
+    ctx.fillRect(x, y + h - t, w, t);
+    ctx.fillRect(x, y, t, h);
+    ctx.fillRect(x + w - t, y, t, h);
+  }
 
-  ctx.fillStyle = C.black;
-  ctx.font = "bold 160px SansBold";
-  const arrow = ` → `; // →
-  ctx.fillText(`v${fromVersion}${arrow}v${toVersion}`, cx, HEIGHT / 2 + 40);
+  // --- Ornamental double outer frame --------------------------------------
+  strokeBox(40, 40, WIDTH - 80, HEIGHT - 80, 3);
+  strokeBox(60, 60, WIDTH - 120, HEIGHT - 120, 1);
 
-  ctx.font = "48px Sans";
-  ctx.fillText("Bitte warten...", cx, HEIGHT / 2 + 180);
+  // Corner "+" marks (abstract decoration, not an icon).
+  function cornerMark(px, py, len) {
+    ctx.fillRect(px - len, py - 1, len * 2, 3);
+    ctx.fillRect(px - 1, py - len, 3, len * 2);
+  }
+  const cm = 18;
+  cornerMark(110, 110, cm);
+  cornerMark(WIDTH - 110, 110, cm);
+  cornerMark(110, HEIGHT - 110, cm);
+  cornerMark(WIDTH - 110, HEIGHT - 110, cm);
 
+  // --- Header -------------------------------------------------------------
   ctx.font = "28px Sans";
+  ctx.fillText("ePaper · Kalender", cx, 300);
+  ctx.fillRect(cx - 200, 325, 400, 2);
+
+  ctx.font = "bold 36px SansBold";
+  ctx.fillText("System-Update", cx, 410);
+
+  // --- Hero: v{from}  ━▶  v{to}  (pixel-exact scale of 36 px bitmaps) ------
+  const scale = 3;                                 // 36 px -> 108 px visual
+  const fromText = `v${fromVersion}`;
+  const toText   = `v${toVersion}`;
+  const probe = createCanvas(10, 10).getContext("2d");
+  installPXFont(probe); probe.font = "bold 36px SansBold";
+  const fromW = probe.measureText(fromText).width * scale;
+  const toW   = probe.measureText(toText).width * scale;
+
+  const gap = 60;
+  const arrowLen = 200;
+  const total = fromW + gap + arrowLen + gap + toW;
+  const vCy = 780;
+  let x = cx - total / 2;
+
+  drawBigText(ctx, fromText, x + fromW / 2, vCy, scale, C.black);
+  x += fromW + gap;
+
+  const barH = 14, headLen = 54, headH = 70;
   ctx.fillStyle = C.black;
-  ctx.fillText("Das Gerät startet nach dem Download neu.", cx, HEIGHT / 2 + 260);
+  ctx.fillRect(x, vCy - barH / 2, arrowLen - headLen, barH);
+  ctx.beginPath();
+  ctx.moveTo(x + arrowLen - headLen, vCy - headH / 2);
+  ctx.lineTo(x + arrowLen,           vCy);
+  ctx.lineTo(x + arrowLen - headLen, vCy + headH / 2);
+  ctx.closePath();
+  ctx.fill();
+
+  x += arrowLen + gap;
+  drawBigText(ctx, toText, x + toW / 2, vCy, scale, C.black);
+
+  // --- Static progress bar (clearly "in progress", not lying mid-way) -----
+  const pbW = 720, pbH = 40;
+  const pbX = cx - pbW / 2, pbY = 1200;
+  ctx.fillStyle = C.black;
+  strokeBox(pbX, pbY, pbW, pbH, 3);
+  ctx.fillRect(pbX + 8, pbY + 8, (pbW - 16) * 0.55, pbH - 16);
+
+  ctx.font = "26px Sans";
+  ctx.fillText("Wird installiert …", cx, pbY + pbH + 44);
+
+  // --- Footer -------------------------------------------------------------
+  ctx.fillRect(cx - 220, 1410, 440, 2);
+  ctx.font = "26px Sans";
+  ctx.fillText("Das Gerät startet nach dem Download", cx, 1460);
+  ctx.fillText("automatisch neu.", cx, 1500);
 
   return canvas;
 }
